@@ -146,14 +146,12 @@ Naming these is part of the deliverable, so none of them are buried:
 - **Expiry is a date, not an instant**, evaluated in the **token owner's** timezone via `User#today`.
   The creation side uses the current user's zone, which is the same person; enforcement deliberately
   does not, because `User.current` is the anonymous user while a request is being authenticated.
-- **`test/system/` was never run, anywhere.** The development container is aarch64 with no browser and
-  no root to install one. CI was not a fallback either: every GitHub Actions run on this fork fails at
-  startup in zero seconds, including Redmine's own untouched `Lint` workflow, which points at a
-  repository-level Actions policy rather than anything in this branch. So
-  `test/system/api_key_copy_test.rb` — which asserts the markup of the API-key sidebar block that the
-  new link sits beside — is **unverified**. The block's markup was deliberately left byte-for-byte
-  untouched to keep that risk as small as possible, and the new sidebar entry is a sibling element
-  rather than an edit inside it.
+- **`test/system/` cannot run in the development container** — aarch64, no browser, no root to install
+  one. It is covered by CI instead: Redmine's own `Tests` workflow runs the system suite with Chrome,
+  and it passes on this branch, so `test/system/api_key_copy_test.rb` — which asserts the markup of
+  the API-key sidebar block the new link sits beside — **is** verified, just not locally. The block's
+  markup was left byte-for-byte untouched regardless, and a functional test now pins the same
+  selectors as a runnable proxy.
 
 ### What an adversarial pass changed
 
@@ -206,6 +204,12 @@ bin/rails test test/integration/api_test/personal_access_token_auth_test.rb
 bin/rails test test/functional/my_controller_test.rb
 bin/rails test test/integration/routing/my_test.rb
 ```
+
+**CI status.** Redmine's own `Tests` workflow is green on this branch — all nine cells of its matrix
+(SQLite, PostgreSQL, MySQL × Ruby 3.2, 3.3, 3.4) plus the Chrome system-test job. The `Lint` workflow
+is **red for a pre-existing reason unrelated to this branch**: its `bundle-audit` job reports
+advisories against Rails 7.2.3, the version the `6.1.2` tag pins, and this branch does not touch the
+`Gemfile`. The `rubocop` and `stylelint` jobs in that workflow pass.
 
 Full suite, run on this checkout:
 
@@ -303,9 +307,9 @@ $ ./ui-verify.sh
 
 ## Assumptions
 
-- The reviewer runs SQLite. It is what `config/database.yml` was set to here, chosen so setup needs one
-  small native gem instead of a database client toolchain. Nothing in the change is SQLite-specific;
-  the unique indexes and the `date` column are portable.
+- Local development used SQLite, chosen so setup needs one small native gem instead of a database
+  client toolchain. Portability is no longer an assumption: CI runs the suite across
+  **SQLite, PostgreSQL and MySQL on Ruby 3.2, 3.3 and 3.4**, and all nine cells pass on this branch.
 - `Setting.rest_api_enabled` must be on, as for the existing API key. With it off, a PAT gets the same
   403 the API key gets.
 - Upstream Redmine trunk has moved in this area since 6.1.2. Those commits were deliberately **not**

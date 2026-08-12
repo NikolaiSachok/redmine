@@ -165,6 +165,10 @@ class ApplicationController < ActionController::Base
       if user && user.admin? && (username = api_switch_user_from_request)
         su = User.find_by_login(username)
         if su && su.active?
+          # How the request authenticated is a property of the request, not of
+          # the user object. Impersonation loads a fresh record, so carry it
+          # over or the restrictions that depend on it silently stop applying.
+          su.authenticated_by_personal_access_token = user.authenticated_by_personal_access_token?
           logger.info("  User switched by: #{user.login} (id=#{user.id})") if logger
           user = su
         else

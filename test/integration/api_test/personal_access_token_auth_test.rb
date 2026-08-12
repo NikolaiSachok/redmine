@@ -171,6 +171,37 @@ class Redmine::ApiTest::PersonalAccessTokenAuthTest < Redmine::ApiTest::Base
 
   # ATTACKS.md PAT-007: a token mistakenly sent as ?key= does not authenticate,
   # but it must not be written to the log in cleartext either.
+  # ATTACKS.md PAT-002: impersonation loads a fresh user record, so the
+  # restriction has to be carried over or it stops applying mid-request.
+  def test_pat_002_switching_user_must_not_disclose_the_api_key
+    admin = User.find(1)
+    token = PersonalAccessToken.create!(:user => admin, :name => 'CI')
+    target = User.find(2)
+    target.api_key
+
+    get '/users/current.json',
+        :headers => {'X-Redmine-API-Key' => token.value,
+                     'X-Redmine-Switch-User' => target.login}
+    assert_response :ok
+    json = ActiveSupport::JSON.decode(response.body)['user']
+    assert_equal target.id, json['id']
+    assert_nil json['api_key']
+  end
+
+  def test_switching_user_with_an_api_key_is_unchanged
+    admin = User.find(1)
+    api_key = admin.api_key
+    target = User.find(2)
+    target_key = target.api_key
+
+    # the legacy credential keeps its existing behaviour, restriction or not
+    get '/users/current.json',
+        :headers => {'X-Redmine-API-Key' => api_key,
+                     'X-Redmine-Switch-User' => target.login}
+    assert_response :ok
+    assert_equal target_key, ActiveSupport::JSON.decode(response.body)['user']['api_key']
+  end
+
   def test_pat_007_a_credential_parameter_is_filtered_from_logs
     filtered = ActiveSupport::ParameterFilter
                .new(Rails.application.config.filter_parameters)

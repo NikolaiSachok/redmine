@@ -555,6 +555,10 @@ class User < Principal
     Token.find_active_user('api', key)
   end
 
+  def self.find_by_personal_access_token(value)
+    PersonalAccessToken.authenticate(value)
+  end
+
   # Makes find_by_mail case-insensitive
   def self.find_by_mail(mail)
     having_mail(mail).first

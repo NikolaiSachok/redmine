@@ -128,7 +128,10 @@ class ApplicationController < ActionController::Base
       end
     end
     if user.nil? && Setting.rest_api_enabled? && accept_api_auth?
-      if (key = api_key_from_request)
+      if (value = personal_access_token_from_request)
+        # Use personal access token
+        user = User.find_by_personal_access_token(value)
+      elsif (key = api_key_from_request)
         # Use API key
         user = User.find_by_api_key(key)
       elsif access_token = Doorkeeper.authenticate(request)
@@ -150,6 +153,7 @@ class ApplicationController < ActionController::Base
           end
 
           user ||= User.find_by_api_key(username)
+          user ||= User.find_by_personal_access_token(username)
         end
         if user && user.must_change_password?
           render_error :message => 'You must change your password', :status => 403
@@ -731,6 +735,16 @@ class ApplicationController < ActionController::Base
     elsif request.headers["X-Redmine-API-Key"].present?
       request.headers["X-Redmine-API-Key"].to_s
     end
+  end
+
+  # Returns the personal access token present in the request header.
+  #
+  # Unlike the API key, a personal access token is never read from a request
+  # parameter: parameters are written to the application log, and to the access
+  # log of any proxy in front of it.
+  def personal_access_token_from_request
+    value = request.headers["X-Redmine-API-Key"].to_s
+    value if value.start_with?(PersonalAccessToken::PREFIX)
   end
 
   # Returns the API 'switch user' value if present

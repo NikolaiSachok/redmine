@@ -832,4 +832,73 @@ class MyControllerTest < Redmine::ControllerTest
     assert_match /reset/, flash[:notice]
     assert_redirected_to '/my/account'
   end
+
+  def test_personal_access_tokens_without_any_token
+    get :personal_access_tokens
+
+    assert_response :success
+    assert_select 'p.nodata'
+  end
+
+  def test_personal_access_tokens_should_list_the_users_tokens_only
+    PersonalAccessToken.create!(:user => User.find(2), :name => 'mine')
+    PersonalAccessToken.create!(:user => User.find(3), :name => 'someone else')
+    get :personal_access_tokens
+
+    assert_response :success
+    assert_select 'table.list td.name', :text => 'mine'
+    assert_select 'table.list td.name', :text => 'someone else', :count => 0
+  end
+
+  def test_create_personal_access_token
+    assert_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => 'CI', :expires_in_days => '30'}
+      }
+    end
+    assert_response :success
+
+    token = PersonalAccessToken.order(:id => :desc).first
+    assert_equal User.find(2), token.user
+    assert_equal User.current.today + 30, token.expires_on
+    # the value is shown exactly once, and only here
+    assert_select 'div.box pre', :text => /\Armpat_[0-9a-f]{40}\z/
+  end
+
+  def test_create_personal_access_token_without_expiry
+    post :create_personal_access_token, :params => {
+      :personal_access_token => {:name => 'CI', :expires_in_days => ''}
+    }
+    assert_response :success
+    assert_nil PersonalAccessToken.order(:id => :desc).first.expires_on
+  end
+
+  def test_create_personal_access_token_without_name_should_fail
+    assert_no_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => '', :expires_in_days => '30'}
+      }
+    end
+    assert_response :success
+    assert_select '#errorExplanation'
+    assert_select 'div.box pre', :count => 0
+  end
+
+  def test_revoke_personal_access_token
+    token = PersonalAccessToken.create!(:user => User.find(2), :name => 'CI')
+
+    assert_difference 'PersonalAccessToken.count', -1 do
+      delete :revoke_personal_access_token, :params => {:id => token.id}
+    end
+    assert_redirected_to '/my/personal_access_tokens'
+  end
+
+  def test_revoke_personal_access_token_of_another_user_should_respond_404
+    token = PersonalAccessToken.create!(:user => User.find(3), :name => 'CI')
+
+    assert_no_difference 'PersonalAccessToken.count' do
+      delete :revoke_personal_access_token, :params => {:id => token.id}
+    end
+    assert_response :not_found
+  end
 end

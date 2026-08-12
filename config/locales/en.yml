@@ -179,6 +179,8 @@ en:
   notice_email_error: "An error occurred while sending mail (%{value})"
   notice_feeds_access_key_reseted: Your Atom access key was reset.
   notice_api_access_key_reseted: Your API access key was reset.
+  notice_personal_access_token_created: Personal access token created. Copy it now, it will not be shown again.
+  notice_personal_access_token_revoked: Personal access token revoked.
   notice_failed_to_save_issues: "Failed to save %{count} issue(s) on %{total} selected: %{ids}."
   notice_failed_to_save_time_entries: "Failed to save %{count} time entrie(s) on %{total} selected: %{ids}."
   notice_failed_to_save_members: "Failed to save member(s): %{errors}."
@@ -330,6 +332,8 @@ en:
   field_mail_notification: Email notifications
   field_admin: Administrator
   field_last_login_on: Last sign in
+  field_expires_on: Expires
+  field_last_used_on: Last used
   field_passwd_changed_on: Password last changed
   field_language: Language
   field_effective_date: Due date
@@ -1030,6 +1034,11 @@ en:
   label_api_access_key: API access key
   label_missing_api_access_key: Missing an API access key
   label_api_access_key_created_on: "API access key created %{value} ago"
+  label_personal_access_token_plural: Personal access tokens
+  label_personal_access_token_new: New personal access token
+  label_personal_access_token_never_used: Never used
+  label_expiration_x_days: "%{count} days"
+  label_expiration_none: No expiration
   label_profile: Profile
   label_subtask: Subtask
   label_subtask_plural: Subtasks

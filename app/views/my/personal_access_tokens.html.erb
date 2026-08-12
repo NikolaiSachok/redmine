@@ -1,0 +1,53 @@
+<%= title [l(:label_my_account), my_account_path], l(:label_personal_access_token_plural) %>
+
+<% if @token_value %>
+<div class="box">
+  <pre class="autoscroll"><%= @token_value %></pre>
+</div>
+<% end %>
+
+<%= labelled_form_for @personal_access_token, :url => my_personal_access_tokens_path, :html => {:method => :post} do |f| %>
+<fieldset class="box tabular">
+  <legend><%= l(:label_personal_access_token_new) %></legend>
+  <%= error_messages_for @personal_access_token %>
+  <p><%= f.text_field :name, :size => 40, :required => true %></p>
+  <p><%= f.select :expires_in_days,
+                  [30, 60, 90].collect {|days| [l(:label_expiration_x_days, :count => days), days]} +
+                    [[l(:label_expiration_none), '']],
+                  :label => :field_expires_on %></p>
+</fieldset>
+<p><%= submit_tag l(:button_create) %></p>
+<% end %>
+
+<% if @personal_access_tokens.any? %>
+<div class="autoscroll">
+<table class="list">
+  <thead>
+    <tr>
+      <th><%= l(:field_name) %></th>
+      <th><%= l(:field_created_on) %></th>
+      <th><%= l(:field_expires_on) %></th>
+      <th><%= l(:field_last_used_on) %></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    <% @personal_access_tokens.each do |token| %>
+    <tr id="personal-access-token-<%= token.id %>" class="<%= cycle('odd', 'even') %>">
+      <td class="name"><span><%= token.name %></span></td>
+      <td><%= format_time(token.created_at) %></td>
+      <td><%= token.expires_on ? format_date(token.expires_on) : l(:label_expiration_none) %></td>
+      <td><%= token.last_used_on ? format_time(token.last_used_on) : l(:label_personal_access_token_never_used) %></td>
+      <td class="buttons"><%= delete_link my_personal_access_token_path(token) %></td>
+    </tr>
+    <% end %>
+  </tbody>
+</table>
+</div>
+<% else %>
+<p class="nodata"><%= l(:label_no_data) %></p>
+<% end %>
+
+<% content_for :sidebar do %>
+<%= render :partial => 'my/sidebar' %>
+<% end %>

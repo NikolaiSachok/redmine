@@ -27,6 +27,7 @@ class MyController < ApplicationController
 
   require_sudo_mode :account, only: :put
   require_sudo_mode :reset_atom_key, :reset_api_key, :show_api_key, :destroy
+  require_sudo_mode :create_personal_access_token, :revoke_personal_access_token
 
   helper :issues
   helper :users
@@ -148,6 +149,37 @@ class MyController < ApplicationController
     redirect_to my_account_path
   end
 
+  def personal_access_tokens
+    @user = User.current
+    @personal_access_token ||= PersonalAccessToken.new
+    @personal_access_tokens = @user.personal_access_tokens.sorted
+    no_store
+  end
+
+  def create_personal_access_token
+    @user = User.current
+    @personal_access_token = PersonalAccessToken.new(personal_access_token_params)
+    @personal_access_token.user = @user
+    if @personal_access_token.save
+      # The value is rendered once, from memory. It is never put in the flash
+      # or the session, and cannot be recovered afterwards.
+      @token_value = @personal_access_token.value
+      flash.now[:notice] = l(:notice_personal_access_token_created)
+      @personal_access_token = PersonalAccessToken.new
+    end
+    personal_access_tokens
+    render :personal_access_tokens
+  end
+
+  def revoke_personal_access_token
+    token = User.current.personal_access_tokens.find_by_id(params[:id])
+    return render_404 if token.nil?
+
+    token.destroy
+    flash[:notice] = l(:notice_personal_access_token_revoked)
+    redirect_to my_personal_access_tokens_path
+  end
+
   def update_page
     @user = User.current
     block_settings = params[:settings] || {}
@@ -197,5 +229,15 @@ class MyController < ApplicationController
     @user.pref.order_blocks params[:group], params[:blocks]
     @user.pref.save
     head :ok
+  end
+
+  private
+
+  def personal_access_token_params
+    if params[:personal_access_token].present?
+      params.require(:personal_access_token).permit(:name, :expires_in_days)
+    else
+      {}
+    end
   end
 end

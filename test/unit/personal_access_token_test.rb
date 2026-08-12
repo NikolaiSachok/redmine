@@ -99,9 +99,24 @@ class PersonalAccessTokenTest < ActiveSupport::TestCase
   end
 
   def test_authenticate_should_return_nil_for_an_expired_token
-    token = PersonalAccessToken.create!(:user => @user, :name => 'CI',
-                                        :expires_on => User.current.today - 1)
+    token = PersonalAccessToken.create!(:user => @user, :name => 'CI')
+    token.update_column(:expires_on, User.current.today - 1)
     assert_nil PersonalAccessToken.authenticate(token.value)
+  end
+
+  def test_should_not_be_created_with_an_expiry_in_the_past
+    token = PersonalAccessToken.new(:user => @user, :name => 'CI',
+                                    :expires_on => User.current.today - 1)
+    assert !token.save
+    assert token.errors[:expires_on].present?
+  end
+
+  def test_expires_in_days_should_set_the_expiry_date
+    token = PersonalAccessToken.create!(:user => @user, :name => 'CI', :expires_in_days => '30')
+    assert_equal User.current.today + 30, token.expires_on
+
+    never = PersonalAccessToken.create!(:user => @user, :name => 'forever', :expires_in_days => '')
+    assert_nil never.expires_on
   end
 
   def test_authenticate_should_return_nil_for_a_locked_user_and_the_user_again_once_unlocked

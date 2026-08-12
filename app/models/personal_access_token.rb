@@ -34,6 +34,8 @@ class PersonalAccessToken < ApplicationRecord
   validates :name, :uniqueness => {:scope => :user_id, :case_sensitive => true}
   validates :token_digest, :presence => true, :uniqueness => true
 
+  validate :expiry_must_not_be_in_the_past, :on => :create
+
   before_validation :generate_token, :on => :create
 
   scope :sorted, lambda {order(:created_at => :desc)}
@@ -81,7 +83,23 @@ class PersonalAccessToken < ApplicationRecord
     update_column(:last_used_on, Time.now)
   end
 
+  # Lifetime in days, as offered by the creation form. Blank means no expiry:
+  # the choice is explicit either way, rather than defaulting to a credential
+  # that never dies.
+  attr_reader :expires_in_days
+
+  def expires_in_days=(days)
+    @expires_in_days = days.presence
+    self.expires_on = days.present? ? User.current.today + days.to_i : nil
+  end
+
   private
+
+  def expiry_must_not_be_in_the_past
+    if expires_on.present? && expires_on < User.current.today
+      errors.add(:expires_on, :invalid)
+    end
+  end
 
   def generate_token
     @value = PREFIX + Redmine::Utils.random_hex(20)

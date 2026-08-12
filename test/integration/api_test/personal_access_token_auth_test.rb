@@ -55,8 +55,8 @@ class Redmine::ApiTest::PersonalAccessTokenAuthTest < Redmine::ApiTest::Base
 
   def test_should_deny_an_expired_token
     user = User.generate!
-    token = PersonalAccessToken.create!(:user => user, :name => 'CI',
-                                        :expires_on => User.current.today - 1)
+    token = PersonalAccessToken.create!(:user => user, :name => 'CI')
+    token.update_column(:expires_on, User.current.today - 1)
 
     get '/users/current.json', :headers => {'X-Redmine-API-Key' => token.value}
     assert_response :unauthorized

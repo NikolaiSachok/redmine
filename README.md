@@ -109,10 +109,14 @@ Naming these is part of the deliverable, so none of them are buried:
   key authentication in Redmine today, and PATs behave the same. Changing it is a product decision
   beyond this slice.
 - **Expiry is a date, evaluated in the current user's timezone** via `User#today`, not an instant.
-- **`test/system/` was never run.** The development container is aarch64 with no browser and no root
-  to install one, so `test/system/api_key_copy_test.rb` — which asserts the markup of the API-key
-  sidebar block that the new link sits beside — is covered by CI only. The block's markup was left
-  untouched precisely because of this.
+- **`test/system/` was never run, anywhere.** The development container is aarch64 with no browser and
+  no root to install one. CI was not a fallback either: every GitHub Actions run on this fork fails at
+  startup in zero seconds, including Redmine's own untouched `Lint` workflow, which points at a
+  repository-level Actions policy rather than anything in this branch. So
+  `test/system/api_key_copy_test.rb` — which asserts the markup of the API-key sidebar block that the
+  new link sits beside — is **unverified**. The block's markup was deliberately left byte-for-byte
+  untouched to keep that risk as small as possible, and the new sidebar entry is a sibling element
+  rather than an edit inside it.
 
 ### Why the query parameter is refused
 

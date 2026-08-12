@@ -98,6 +98,7 @@ Rails.application.routes.draw do
   post 'my/api_key', :to => 'my#reset_api_key'
   post 'my/atom_key', :to => 'my#reset_atom_key', :as => 'my_atom_key'
   get 'my/personal_access_tokens', :to => 'my#personal_access_tokens', :as => 'my_personal_access_tokens'
+  get 'my/personal_access_tokens/new', :to => 'my#new_personal_access_token', :as => 'new_my_personal_access_token'
   post 'my/personal_access_tokens', :to => 'my#create_personal_access_token'
   delete 'my/personal_access_tokens/:id', :to => 'my#revoke_personal_access_token', :as => 'my_personal_access_token'
   match 'my/password', :controller => 'my', :action => 'password', :via => [:get, :post]

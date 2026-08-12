@@ -1,23 +1,8 @@
-<%= title [l(:label_my_account), my_account_path], l(:label_personal_access_token_plural) %>
-
-<% if @token_value %>
-<div class="box">
-  <pre class="autoscroll"><%= @token_value %></pre>
+<div class="contextual">
+<%= link_to sprite_icon('add', l(:label_personal_access_token_new)), new_my_personal_access_token_path, :class => 'icon icon-add' %>
 </div>
-<% end %>
 
-<%= labelled_form_for @personal_access_token, :url => my_personal_access_tokens_path, :html => {:method => :post} do |f| %>
-<fieldset class="box tabular">
-  <legend><%= l(:label_personal_access_token_new) %></legend>
-  <%= error_messages_for @personal_access_token %>
-  <p><%= f.text_field :name, :size => 40, :required => true %></p>
-  <p><%= f.select :expires_in_days,
-                  [30, 60, 90].collect {|days| [l(:label_expiration_x_days, :count => days), days]} +
-                    [[l(:label_expiration_none), '']],
-                  :label => :field_expires_on %></p>
-</fieldset>
-<p><%= submit_tag l(:button_create) %></p>
-<% end %>
+<%= title [l(:label_my_account), my_account_path], l(:label_personal_access_token_plural) %>
 
 <% if @personal_access_tokens.any? %>
 <div class="autoscroll">

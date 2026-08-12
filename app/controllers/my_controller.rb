@@ -151,9 +151,13 @@ class MyController < ApplicationController
 
   def personal_access_tokens
     @user = User.current
-    @personal_access_token ||= PersonalAccessToken.new
     @personal_access_tokens = @user.personal_access_tokens.sorted
-    no_store
+  end
+
+  def new_personal_access_token
+    @user = User.current
+    @personal_access_token =
+      PersonalAccessToken.new(:expires_in_days => PersonalAccessToken::DEFAULT_LIFETIME_IN_DAYS)
   end
 
   def create_personal_access_token
@@ -161,14 +165,17 @@ class MyController < ApplicationController
     @personal_access_token = PersonalAccessToken.new(personal_access_token_params)
     @personal_access_token.user = @user
     if @personal_access_token.save
-      # The value is rendered once, from memory. It is never put in the flash
-      # or the session, and cannot be recovered afterwards.
+      # The value is rendered once, from memory, on a page of its own so that
+      # it is unambiguously the token just created. It is never put in the
+      # flash or the session, and only its digest is stored, so there is no
+      # second chance to read it.
       @token_value = @personal_access_token.value
       flash.now[:notice] = l(:notice_personal_access_token_created)
-      @personal_access_token = PersonalAccessToken.new
+      no_store
+      render :created_personal_access_token
+    else
+      render :new_personal_access_token
     end
-    personal_access_tokens
-    render :personal_access_tokens
   end
 
   def revoke_personal_access_token

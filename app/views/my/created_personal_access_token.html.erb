@@ -1,0 +1,30 @@
+<%= title [l(:label_my_account), my_account_path],
+           [l(:label_personal_access_token_plural), my_personal_access_tokens_path],
+           @personal_access_token.name %>
+
+<div class="box" data-controller="api-key-copy">
+  <div class="api-key-actions">
+    <a class="copy-api-key-link icon icon-only"
+       title="<%= l(:button_copy) %>"
+       aria-label="<%= l(:button_copy) %>"
+       href="#"
+       role="button"
+       tabindex="0"
+       data-action="click->api-key-copy#copy">
+      <%= sprite_icon('copy') %>
+    </a>
+  </div>
+  <pre id="personal-access-token-value" class="autoscroll" data-api-key-copy-target="apiKey"><%= @token_value %></pre>
+  <p>
+    <em class="info">
+      <%= l(:field_expires_on) %>:
+      <%= @personal_access_token.expires_on ? format_date(@personal_access_token.expires_on) : l(:label_expiration_none) %>
+    </em>
+  </p>
+</div>
+
+<p><%= link_to l(:button_back), my_personal_access_tokens_path %></p>
+
+<% content_for :sidebar do %>
+<%= render :partial => 'my/sidebar' %>
+<% end %>

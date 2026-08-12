@@ -838,6 +838,19 @@ class MyControllerTest < Redmine::ControllerTest
 
     assert_response :success
     assert_select 'p.nodata'
+    # the list page offers creation but does not itself create
+    assert_select 'div.contextual a.icon-add[href=?]', '/my/personal_access_tokens/new'
+    assert_select 'input#personal_access_token_name', 0
+  end
+
+  def test_new_personal_access_token_should_default_to_thirty_days
+    get :new_personal_access_token
+
+    assert_response :success
+    assert_select 'input#personal_access_token_name'
+    assert_select 'select#personal_access_token_expires_in_days' do
+      assert_select 'option[selected="selected"][value=?]', '30'
+    end
   end
 
   def test_personal_access_tokens_should_list_the_users_tokens_only
@@ -861,8 +874,23 @@ class MyControllerTest < Redmine::ControllerTest
     token = PersonalAccessToken.order(:id => :desc).first
     assert_equal User.find(2), token.user
     assert_equal User.current.today + 30, token.expires_on
-    # the value is shown exactly once, and only here
-    assert_select 'div.box pre', :text => /\Armpat_[0-9a-f]{40}\z/
+    # the value is shown exactly once, on a page of its own that names the
+    # token it belongs to, so it cannot be confused with another one
+    assert_select 'h2', :text => /CI/
+    assert_select 'pre#personal-access-token-value', :text => /\Armpat_[0-9a-f]{40}\z/
+    assert_select 'div[data-controller=?] a.copy-api-key-link', 'api-key-copy'
+  end
+
+  def test_create_personal_access_token_should_not_show_the_value_again
+    post :create_personal_access_token, :params => {
+      :personal_access_token => {:name => 'CI', :expires_in_days => '30'}
+    }
+    assert_select 'pre#personal-access-token-value'
+
+    get :personal_access_tokens
+    assert_response :success
+    assert_select 'pre#personal-access-token-value', 0
+    assert_select 'table.list td.name', :text => 'CI'
   end
 
   def test_create_personal_access_token_without_expiry
@@ -881,7 +909,9 @@ class MyControllerTest < Redmine::ControllerTest
     end
     assert_response :success
     assert_select '#errorExplanation'
-    assert_select 'div.box pre', :count => 0
+    assert_select 'pre#personal-access-token-value', 0
+    # the form is redisplayed rather than the list
+    assert_select 'select#personal_access_token_expires_in_days'
   end
 
   def test_revoke_personal_access_token

@@ -51,6 +51,25 @@ successful authentication. Locking a user does not delete their tokens: authenti
 for an active user, so locking disables and unlocking restores, and a locked account's tokens remain
 visible to audit and revoke.
 
+### The management screen
+
+**My account → Personal access tokens**, in three pages following the shape of the list screens
+Redmine already has: the list with an "add" link, a separate creation form, and a page that shows the
+new token on its own.
+
+Creation defaults to a **30-day** lifetime, with 60 and 90 offered and "No expiration" available but
+never the default — choosing a permanent credential has to be deliberate, and the form says what it
+means. The token value is then shown on its **own page, titled with that token's name**, so creating
+several in a row can never leave you copying the wrong secret. It has a copy button, reusing the
+Stimulus controller Redmine already ships for the API key.
+
+GitHub redirects back to the list and highlights the new row instead. That is not safely available
+here: Redmine keeps sessions in a **cookie**, so anything put in `flash` travels to the browser, and
+the digest-only storage means the value cannot be re-fetched server-side after a redirect the way
+Redmine's two-factor backup codes are. Rendering the page directly from the POST keeps the secret in
+one response and out of the cookie. The trade-off is that a browser refresh on that page re-submits
+the form and produces a duplicate-name error.
+
 **Accepted transports:** the `X-Redmine-API-Key` header, and the HTTP Basic username. **Not** the
 `?key=` query parameter — see the limits below.
 
@@ -154,9 +173,9 @@ Full suite, run on this checkout:
 | | runs | assertions | failures | errors | skips |
 |---|---|---|---|---|---|
 | Before any change (tag `6.1.2`) | 5479 | 24753 | 0 | 0 | 44 |
-| After | 5513 | 24834 | 0 | 0 | 44 |
+| After | 5515 | 24856 | 0 | 0 | 44 |
 
-The difference is exactly the 34 tests added here; nothing existing changed state. `test/system/` is
+The difference is exactly the 36 tests added here; nothing existing changed state. `test/system/` is
 excluded from `bin/rails test` and was not run locally (see limits).
 
 ### End to end, against a running server

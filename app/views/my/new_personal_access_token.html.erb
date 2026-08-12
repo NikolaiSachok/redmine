@@ -1,0 +1,23 @@
+<%= title [l(:label_my_account), my_account_path],
+           [l(:label_personal_access_token_plural), my_personal_access_tokens_path],
+           l(:label_personal_access_token_new) %>
+
+<%= error_messages_for @personal_access_token %>
+
+<%= labelled_form_for @personal_access_token, :url => my_personal_access_tokens_path, :html => {:method => :post} do |f| %>
+<div class="box tabular">
+  <p><%= f.text_field :name, :size => 40, :required => true %></p>
+  <p>
+    <%= f.select :expires_in_days,
+                 PersonalAccessToken::LIFETIME_PRESETS_IN_DAYS.collect {|days| [l(:label_expiration_x_days, :count => days), days]} +
+                   [[l(:label_expiration_none), '']],
+                 :label => :field_expires_on %>
+    <em class="info"><%= l(:text_personal_access_token_no_expiration) %></em>
+  </p>
+</div>
+<p><%= submit_tag l(:button_create) %></p>
+<% end %>
+
+<% content_for :sidebar do %>
+<%= render :partial => 'my/sidebar' %>
+<% end %>

@@ -36,6 +36,7 @@ class RoutingMyTest < Redmine::RoutingTest
     should_route 'POST /my/atom_key' => 'my#reset_atom_key'
 
     should_route 'GET /my/personal_access_tokens' => 'my#personal_access_tokens'
+    should_route 'GET /my/personal_access_tokens/new' => 'my#new_personal_access_token'
     should_route 'POST /my/personal_access_tokens' => 'my#create_personal_access_token'
     should_route 'DELETE /my/personal_access_tokens/1' => 'my#revoke_personal_access_token', :id => '1'
 

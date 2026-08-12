@@ -28,6 +28,11 @@ class PersonalAccessToken < ApplicationRecord
   # file, the way ghp_ and glpat- do for GitHub and GitLab.
   PREFIX = 'rmpat_'
 
+  # Lifetimes offered by the creation form, in days. The first one is the
+  # default: a credential that never expires has to be chosen deliberately.
+  LIFETIME_PRESETS_IN_DAYS = [30, 60, 90].freeze
+  DEFAULT_LIFETIME_IN_DAYS = LIFETIME_PRESETS_IN_DAYS.first
+
   belongs_to :user
 
   validates :name, :presence => true, :length => {:maximum => 60}

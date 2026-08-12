@@ -164,7 +164,17 @@ class MyController < ApplicationController
     @user = User.current
     @personal_access_token = PersonalAccessToken.new(personal_access_token_params)
     @personal_access_token.user = @user
-    if @personal_access_token.save
+    saved =
+      begin
+        @personal_access_token.save
+      rescue ActiveRecord::RecordNotUnique
+        # Two submissions of the same name can both pass the uniqueness
+        # validation and race to the index behind it; show the loser the form
+        # rather than an error page.
+        @personal_access_token.errors.add(:name, :taken)
+        false
+      end
+    if saved
       # The value is rendered once, from memory, on a page of its own so that
       # it is unambiguously the token just created. It is never put in the
       # flash or the session, and only its digest is stored, so there is no

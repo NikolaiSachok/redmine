@@ -68,7 +68,10 @@ module RedmineApp
     # :key carries the API key and, when a client mistakenly puts one there, a
     # personal access token. Without it the credential is written to the log in
     # cleartext by the request line and the parameter dump.
-    config.filter_parameters += [:password, :key]
+    #
+    # Anchored, because a bare :key is matched as a substring and would also
+    # redact unrelated parameters such as commit_update_keywords[keywords].
+    config.filter_parameters += [:password, /\Akey\z/]
 
     config.action_mailer.perform_deliveries = false
 

@@ -936,6 +936,21 @@ class MyControllerTest < Redmine::ControllerTest
     assert_redirected_to '/my/personal_access_tokens'
   end
 
+  def test_create_personal_access_token_losing_a_name_race_should_redisplay_the_form
+    # two submissions of the same name can both pass the uniqueness validation
+    # and race to the unique index behind it
+    PersonalAccessToken.any_instance.stubs(:save).raises(
+      ActiveRecord::RecordNotUnique.new('duplicate key')
+    )
+
+    post :create_personal_access_token, :params => {
+      :personal_access_token => {:name => 'CI', :expires_in_days => '30'}
+    }
+    assert_response :success
+    assert_select '#errorExplanation'
+    assert_select 'pre#personal-access-token-value', 0
+  end
+
   def test_create_personal_access_token_should_require_sudo_mode
     Redmine::SudoMode.stubs(:enabled?).returns(true)
 

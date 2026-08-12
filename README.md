@@ -143,7 +143,9 @@ Naming these is part of the deliverable, so none of them are buried:
 - **PATs inherit the existing API-key posture on 2FA and forced password change.** Neither blocks API
   key authentication in Redmine today, and PATs behave the same. Changing it is a product decision
   beyond this slice.
-- **Expiry is a date, evaluated in the current user's timezone** via `User#today`, not an instant.
+- **Expiry is a date, not an instant**, evaluated in the **token owner's** timezone via `User#today`.
+  The creation side uses the current user's zone, which is the same person; enforcement deliberately
+  does not, because `User.current` is the anonymous user while a request is being authenticated.
 - **`test/system/` was never run, anywhere.** The development container is aarch64 with no browser and
   no root to install one. CI was not a fallback either: every GitHub Actions run on this fork fails at
   startup in zero seconds, including Redmine's own untouched `Lint` workflow, which points at a
@@ -210,9 +212,13 @@ Full suite, run on this checkout:
 | | runs | assertions | failures | errors | skips |
 |---|---|---|---|---|---|
 | Before any change (tag `6.1.2`) | 5479 | 24753 | 0 | 0 | 44 |
-| After | 5515 | 24856 | 0 | 0 | 44 |
+| After | 5528 | 24901 | 0 | 0 | 44 |
 
-The difference is exactly the 36 tests added here; nothing existing changed state. `test/system/` is
+The difference is exactly the 49 tests added here — 18 in `personal_access_token_test.rb`, 18 in
+`personal_access_token_auth_test.rb`, 13 in `my_controller_test.rb` — and nothing existing changed
+state. Note that a run performed while another agent was working the same checkout produced one
+spurious `SQLite3::BusyException`; under concurrency SQLite failures look exactly like real ones, so
+re-run the file alone before believing them. `test/system/` is
 excluded from `bin/rails test` and was not run locally (see limits).
 
 ### End to end, against a running server

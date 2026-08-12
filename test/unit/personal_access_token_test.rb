@@ -111,6 +111,22 @@ class PersonalAccessTokenTest < ActiveSupport::TestCase
     assert token.errors[:expires_on].present?
   end
 
+  # ATTACKS.md PAT-005: a crafted lifetime must not buy a token that never
+  # expires without choosing "No expiration", nor one that expires today.
+  def test_pat_005_lifetime_must_be_one_of_the_offered_presets
+    ['99999999', 'abc', '0', '-1', '45'].each do |days|
+      token = PersonalAccessToken.new(:user => @user, :name => "t#{days}",
+                                      :expires_in_days => days)
+      assert !token.save, "expected #{days.inspect} to be rejected"
+      assert token.errors[:expires_on].present?
+    end
+
+    PersonalAccessToken::LIFETIME_PRESETS_IN_DAYS.each do |days|
+      assert PersonalAccessToken.new(:user => @user, :name => "ok#{days}",
+                                     :expires_in_days => days).save
+    end
+  end
+
   def test_expires_in_days_should_set_the_expiry_date
     token = PersonalAccessToken.create!(:user => @user, :name => 'CI', :expires_in_days => '30')
     assert_equal User.current.today + 30, token.expires_on

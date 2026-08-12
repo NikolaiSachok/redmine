@@ -128,12 +128,13 @@ class ApplicationController < ActionController::Base
       end
     end
     if user.nil? && Setting.rest_api_enabled? && accept_api_auth?
-      if (value = personal_access_token_from_request)
-        # Use personal access token
-        user = User.find_by_personal_access_token(value)
-      elsif (key = api_key_from_request)
+      if (key = api_key_from_request)
         # Use API key
         user = User.find_by_api_key(key)
+        # or a personal access token, which is only ever read from the header.
+        # The API key is tried first so that a request carrying both an API key
+        # and a token header keeps authenticating exactly as it did before.
+        user ||= User.find_by_personal_access_token(personal_access_token_from_request)
       elsif access_token = Doorkeeper.authenticate(request)
         # Oauth
         if access_token.accessible?

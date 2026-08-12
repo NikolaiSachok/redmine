@@ -843,6 +843,19 @@ class MyControllerTest < Redmine::ControllerTest
     assert_select 'input#personal_access_token_name', 0
   end
 
+  def test_account_sidebar_should_link_to_personal_access_tokens
+    with_settings :rest_api_enabled => '1' do
+      get :account
+
+      assert_response :success
+      assert_select '#sidebar a[href=?]', '/my/personal_access_tokens'
+      # the API key block the new link sits beside is asserted by a system test
+      # that cannot run in this container; pin its markup here too
+      assert_select '#sidebar #api-access-key'
+      assert_select '#sidebar .api-key-actions .copy-api-key-link'
+    end
+  end
+
   def test_new_personal_access_token_should_default_to_thirty_days
     get :new_personal_access_token
 
@@ -921,6 +934,29 @@ class MyControllerTest < Redmine::ControllerTest
       delete :revoke_personal_access_token, :params => {:id => token.id}
     end
     assert_redirected_to '/my/personal_access_tokens'
+  end
+
+  def test_create_personal_access_token_should_require_sudo_mode
+    Redmine::SudoMode.stubs(:enabled?).returns(true)
+
+    assert_no_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => 'CI', :expires_in_days => '30'}
+      }
+    end
+    assert_response :success
+    assert_select 'input#sudo_password'
+  end
+
+  def test_revoke_personal_access_token_should_require_sudo_mode
+    token = PersonalAccessToken.create!(:user => User.find(2), :name => 'CI')
+    Redmine::SudoMode.stubs(:enabled?).returns(true)
+
+    assert_no_difference 'PersonalAccessToken.count' do
+      delete :revoke_personal_access_token, :params => {:id => token.id}
+    end
+    assert_response :success
+    assert_select 'input#sudo_password'
   end
 
   def test_revoke_personal_access_token_of_another_user_should_respond_404

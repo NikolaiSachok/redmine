@@ -14,13 +14,13 @@ It is a deliberately small slice of a large ticket, branched from tag `6.1.2`. R
 | | |
 |---|---|
 | **Done** | PAT model with hashed storage and per-token expiry; REST API authentication; My account management screen; unit, integration, functional and routing tests |
-| **Deferred** | Token scopes, audit logging, granular endpoint control, CORS, admin lifetime policy, migration off the legacy API key — each an issue with reasoning |
+| **Deferred** | Token scopes, audit logging, granular endpoint control, CORS, **admin lifetime policy and admin token overview**, expired-token cleanup, the 2FA posture, migration off the legacy API key — each an issue with reasoning |
 | **Out of scope** | Rate limiting, excluded by the brief |
 | **Untouched** | The existing `api_key`, and `Token`, which it is built on |
 
-Deferred work is on the issue tracker rather than in this file's small print: issues #5–#10, labelled
-`deferred`. Two pre-existing weaknesses found while reading the code are recorded as #11 and #12; they
-are not fixed here, because fixing them would widen a diff that should read as one slice.
+Deferred work is on the issue tracker rather than in this file's small print: issues #5–#10, #14 and
+#15, labelled `deferred`. Two pre-existing weaknesses found while reading the code are recorded as #11
+and #12; they are not fixed here, because fixing them would widen a diff that should read as one slice.
 
 ## The problem, reproduced
 
@@ -122,8 +122,24 @@ Naming these is part of the deliverable, so none of them are buried:
   use PATs and must keep using the API key. This asymmetry is intentional; the reasoning is below.
 - **Locking is not revocation.** A locked user's tokens stop working while the account is locked and
   resume on unlock. If a token leaks, revoke it.
+- **Changing your password does not revoke your tokens.** Each one has to be revoked individually.
+  This matches both the existing API key and GitHub's behaviour, but it is the opposite of what
+  `destroy_tokens` does for sessions, so it is worth knowing. Found by the red team (`PAT-011`).
+- **`require_sudo_mode` on create and revoke is config-gated.** Redmine ships with `sudo_mode`
+  unset, so on a default installation the guard is a no-op and no password re-entry is required.
+  The protection is real only where `sudo_mode: true` is configured; the tests pin it by enabling
+  it explicitly. Found by the red team (`PAT-010`).
+- **The ticket asks for *mandatory* expiration; this implements a forced *choice*.** Pillar 1 of
+  #43881 says tokens must expire. Here the creation form makes you pick a lifetime — 30 days by
+  default — but "No expiration" is one of the options. The reason is that the credential being
+  replaced never expires, so forbidding permanent tokens outright would break the long-running
+  integrations that use the current API key, with no migration path offered in the same slice. Real
+  enforcement belongs with the administrator policy that can set a ceiling, deferred as issue #9.
+  This is a deliberate deviation from the ticket, not an oversight.
 - **No admin oversight.** An administrator cannot list or revoke another user's tokens, and cannot
   enforce a maximum lifetime. That is the ticket's admin panel and policy work, deferred as issue #9.
+- **Expired and revoked rows are never swept.** `redmine:tokens:prune` covers the `tokens` table only,
+  so `personal_access_tokens` grows without bound. Issue #14.
 - **PATs inherit the existing API-key posture on 2FA and forced password change.** Neither blocks API
   key authentication in Redmine today, and PATs behave the same. Changing it is a product decision
   beyond this slice.
@@ -136,6 +152,27 @@ Naming these is part of the deliverable, so none of them are buried:
   new link sits beside — is **unverified**. The block's markup was deliberately left byte-for-byte
   untouched to keep that risk as small as possible, and the new sidebar entry is a sibling element
   rather than an edit inside it.
+
+### What an adversarial pass changed
+
+A red-team agent attacked a running instance rather than reading the diff, working from a ledger of
+attacks that it also extends — `notes/ATTACKS.md`, shipped with this repository. Ten hypotheses, two
+landed, and both were weaknesses this feature *introduces* rather than inherits:
+
+- **A token could be traded up for the permanent API key.** `GET /my/account.json` returns the
+  user's `api_key` unconditionally, so a credential that expires and can be revoked bought one that
+  does neither — and works on the `?key=` transport tokens refuse. Fixed: a request authenticated by
+  a token no longer sees `api_key` in either `my/account` or `users/show`. The underlying
+  unconditional disclosure to OAuth callers is pre-existing and stays as issue #12.
+- **A token pasted into `?key=` was written to the log in cleartext.** It does not authenticate
+  there — but the logged value is still live via the header, so a user's mistake leaked a working
+  credential. Fixed by adding `:key` to `config.filter_parameters`, which also closes the
+  pre-existing leak of the API key and the Atom key (issue #11).
+
+The defences that held are recorded too, because that inventory is what makes the next run smarter:
+name output is escaped at every sink, strong parameters reject injected `user_id`/`token_digest`,
+cross-user revoke is scoped to the caller, every unintended transport is refused, CSRF is enforced,
+and enumeration is infeasible against a 16^40 keyspace.
 
 ### Why the query parameter is refused
 
@@ -180,48 +217,82 @@ excluded from `bin/rails test` and was not run locally (see limits).
 
 ### End to end, against a running server
 
-Issue a token from **My account → Personal access tokens**, then:
+What follows is the **unedited output of a script** run against a running server, not a hand-written
+illustration. Token values are held in shell variables and never echoed, which is why the transcript
+shows prefixes and status codes rather than credentials. The scripts themselves are in the session
+transcripts shipped alongside this repository.
 
 ```console
-$ curl -s -o /dev/null -w '%{http_code}\n' -H "X-Redmine-API-Key: $PAT" \
-    http://localhost:3000/users/current.json
-200
+$ ./pat-verify.sh
+### 1. issue a token for admin (value shown once, at creation)
+    issued: rmpat_...(46 chars, prefix visible, rest withheld from this log)
 
-$ curl -s -o /dev/null -w '%{http_code}\n' -u "$PAT:whatever" \
-    http://localhost:3000/users/current.json
-200
+### 2. it authenticates a real API request via the header
+    X-Redmine-API-Key header          -> HTTP 200
+{"user":{"id":1,"login":"admin","admin":true,"firstname":"Redmine","lastname":"Admin","mail":"admin@example.net","create
 
-$ curl -s -o /dev/null -w '%{http_code}\n' \
-    "http://localhost:3000/users/current.json?key=$PAT"
-401
+### 3. and as the HTTP Basic username
+    HTTP Basic username               -> HTTP 200
+
+### 4. but NOT as a query parameter (it would be written to the log)
+    ?key= query parameter             -> HTTP 401
+
+### 5. a second token does not invalidate the first (the API key cannot do this)
+    first token still works           -> HTTP 200
+    second token works too            -> HTTP 200
+
+### 6. stored hashed, and last use recorded
+    token_digest                      : d75a62bdda77... (SHA-256, 64 chars)
+    cleartext recoverable from the DB : false
+    last_used_on                      : 2026-08-12 21:31:40 UTC
+    expires_on                        : 2026-11-10
+
+### 7. expiry is enforced
+    expired token                     -> HTTP 401
+
+### 8. revocation is immediate
+    revoked token                     -> HTTP 401
+
+### 9. the existing API key is unaffected, on all three of its transports
+    api key, header                   -> HTTP 200
+    api key, basic username           -> HTTP 200
+    api key, query parameter          -> HTTP 200
 ```
 
-A second token does not invalidate the first — the behaviour the single API key cannot offer:
+The management screen was walked the same way — logging in over HTTP and driving the real pages,
+because assert_select proves structure but not that a screen works:
 
 ```console
-$ curl -s -o /dev/null -w 'first  %{http_code}\n' -H "X-Redmine-API-Key: $PAT"  .../users/current.json
-first  200
-$ curl -s -o /dev/null -w 'second %{http_code}\n' -H "X-Redmine-API-Key: $PAT2" .../users/current.json
-second 200
-```
+$ ./ui-verify.sh
+### 1. the list page only lists
+    GET  list -> HTTP 200
+    add link present   : 1
+    create form on it  : 0
 
-Expiry and revocation both take effect immediately:
+### 2. the creation form defaults to 30 days
+    GET  new  -> HTTP 200
+    selected option    : 30 days
+    no-expiry warning  : 1
 
-```console
-$ # after setting expires_on to yesterday
-$ curl -s -o /dev/null -w '%{http_code}\n' -H "X-Redmine-API-Key: $PAT" .../users/current.json
-401
-$ # after revoking from the UI
-$ curl -s -o /dev/null -w '%{http_code}\n' -H "X-Redmine-API-Key: $PAT" .../users/current.json
-401
-```
+### 3. creating lands on a page of its own, naming the token
+    POST      -> HTTP 200
+    heading            : My account » Personal access tokens » laptop
+    value shown        : rmpat_d97b37...(truncated on purpose)
+    copy button        : 2
+    expiry stated      : Expires: 09/11/2026
+    back link          : 1
 
-And the existing API key is unaffected on all three of its transports:
+### 4. a second token gets its own page, so the two cannot be confused
+    heading            : My account » Personal access tokens » ci-runner
+    expiry stated      : Expires: No expiration
 
-```console
-api key, header             -> HTTP 200
-api key, basic username     -> HTTP 200
-api key, query parameter    -> HTTP 200
+### 5. neither value is recoverable from the list
+    token values on list: 0
+    rows listed         : ci-runner laptop
+
+### 6. revoking one
+    DELETE    -> HTTP 302
+    rows remaining      : 1
 ```
 
 ## Assumptions

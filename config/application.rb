@@ -65,7 +65,10 @@ module RedmineApp
     config.encoding = "utf-8"
 
     # Configure sensitive parameters which will be filtered from the log file.
-    config.filter_parameters += [:password]
+    # :key carries the API key and, when a client mistakenly puts one there, a
+    # personal access token. Without it the credential is written to the log in
+    # cleartext by the request line and the parameter dump.
+    config.filter_parameters += [:password, :key]
 
     config.action_mailer.perform_deliveries = false
 

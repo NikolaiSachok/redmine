@@ -40,6 +40,7 @@ class PersonalAccessToken < ApplicationRecord
   validates :token_digest, :presence => true, :uniqueness => true
 
   validate :expiry_must_not_be_in_the_past, :on => :create
+  validate :lifetime_must_be_one_that_was_offered, :on => :create
 
   before_validation :generate_token, :on => :create
 
@@ -73,9 +74,13 @@ class PersonalAccessToken < ApplicationRecord
     end
   end
 
-  # Returns true if the token has passed its expiry date
+  # Returns true if the token has passed its expiry date.
+  #
+  # Evaluated in the owner's time zone, the same one the expiry was chosen in.
+  # User.current is the anonymous user while a request is being authenticated,
+  # so relying on it here would shift the boundary by up to a day.
   def expired?
-    expires_on.present? && expires_on < User.current.today
+    expires_on.present? && expires_on < (user || User.current).today
   end
 
   # Returns true if the token can currently authenticate a request. Locking a
@@ -102,6 +107,15 @@ class PersonalAccessToken < ApplicationRecord
 
   def expiry_must_not_be_in_the_past
     if expires_on.present? && expires_on < User.current.today
+      errors.add(:expires_on, :invalid)
+    end
+  end
+
+  # A crafted request could otherwise send any number here: a huge one buys a
+  # token that never expires without choosing "No expiration", and a
+  # non-numeric one becomes 0 and expires the same day.
+  def lifetime_must_be_one_that_was_offered
+    if @expires_in_days.present? && !LIFETIME_PRESETS_IN_DAYS.include?(@expires_in_days.to_i)
       errors.add(:expires_on, :invalid)
     end
   end

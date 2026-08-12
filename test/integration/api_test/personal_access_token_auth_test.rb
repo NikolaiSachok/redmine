@@ -47,9 +47,43 @@ class Redmine::ApiTest::PersonalAccessTokenAuthTest < Redmine::ApiTest::Base
     assert_response :unauthorized
   end
 
+  def test_an_api_key_parameter_should_still_win_over_a_token_header
+    user = User.generate!
+    api_key = user.api_key
+
+    # a client migrating from the API key may carry both; the API key keeps
+    # authenticating exactly as it did before personal access tokens existed
+    get "/users/current.json?key=#{api_key}",
+        :headers => {'X-Redmine-API-Key' => "rmpat_#{Redmine::Utils.random_hex(20)}"}
+    assert_response :ok
+  end
+
+  def test_a_token_header_should_be_used_when_the_api_key_parameter_is_invalid
+    user = User.generate!
+    token = PersonalAccessToken.create!(:user => user, :name => 'CI')
+
+    get '/users/current.json?key=0000000000000000000000000000000000000000',
+        :headers => {'X-Redmine-API-Key' => token.value}
+    assert_response :ok
+    assert_equal user.id, ActiveSupport::JSON.decode(response.body)['user']['id']
+  end
+
   def test_should_deny_an_unknown_token
     get '/users/current.json',
         :headers => {'X-Redmine-API-Key' => "rmpat_#{Redmine::Utils.random_hex(20)}"}
+    assert_response :unauthorized
+  end
+
+  def test_should_deny_a_revoked_token
+    user = User.generate!
+    token = PersonalAccessToken.create!(:user => user, :name => 'CI')
+    value = token.value
+
+    get '/users/current.json', :headers => {'X-Redmine-API-Key' => value}
+    assert_response :ok
+
+    token.destroy
+    get '/users/current.json', :headers => {'X-Redmine-API-Key' => value}
     assert_response :unauthorized
   end
 
@@ -107,6 +141,41 @@ class Redmine::ApiTest::PersonalAccessTokenAuthTest < Redmine::ApiTest::Base
       get '/users/current.json', :headers => {'X-Redmine-API-Key' => token.value}
       assert_response :ok
     end
+  end
+
+  # ATTACKS.md PAT-002: a token that expires and can be revoked must not be
+  # tradeable for the permanent, unscoped API key.
+  def test_pat_002_a_token_must_not_disclose_the_api_key
+    user = User.generate!
+    user.api_key
+    token = PersonalAccessToken.create!(:user => user, :name => 'CI')
+
+    get '/my/account.json', :headers => {'X-Redmine-API-Key' => token.value}
+    assert_response :ok
+    assert_nil ActiveSupport::JSON.decode(response.body)['user']['api_key']
+
+    get '/users/current.json', :headers => {'X-Redmine-API-Key' => token.value}
+    assert_response :ok
+    assert_nil ActiveSupport::JSON.decode(response.body)['user']['api_key']
+  end
+
+  def test_pat_002_the_api_key_is_still_disclosed_to_its_own_holder
+    user = User.generate!
+    api_key = user.api_key
+
+    # unchanged for the legacy credential: only the token path is restricted
+    get '/my/account.json', :headers => {'X-Redmine-API-Key' => api_key}
+    assert_response :ok
+    assert_equal api_key, ActiveSupport::JSON.decode(response.body)['user']['api_key']
+  end
+
+  # ATTACKS.md PAT-007: a token mistakenly sent as ?key= does not authenticate,
+  # but it must not be written to the log in cleartext either.
+  def test_pat_007_a_credential_parameter_is_filtered_from_logs
+    filtered = ActiveSupport::ParameterFilter
+               .new(Rails.application.config.filter_parameters)
+               .filter('key' => "rmpat_#{Redmine::Utils.random_hex(20)}")
+    assert_equal '[FILTERED]', filtered['key']
   end
 
   def test_the_existing_api_key_should_still_authenticate_alongside_tokens

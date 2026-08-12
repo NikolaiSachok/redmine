@@ -114,6 +114,7 @@ class User < Principal
   attr_accessor :last_before_login_on
   attr_accessor :remote_ip
   attr_writer   :oauth_scope
+  attr_writer   :authenticated_by_personal_access_token
 
   LOGIN_LENGTH_LIMIT = 60
   MAIL_LENGTH_LIMIT = 254
@@ -556,7 +557,9 @@ class User < Principal
   end
 
   def self.find_by_personal_access_token(value)
-    PersonalAccessToken.authenticate(value)
+    user = PersonalAccessToken.authenticate(value)
+    user.authenticated_by_personal_access_token = true if user
+    user
   end
 
   # Makes find_by_mail case-insensitive
@@ -750,6 +753,13 @@ class User < Principal
   # true if the user has signed in via oauth
   def authorized_by_oauth?
     !@oauth_scope.nil?
+  end
+
+  # true if this request was authenticated by a personal access token.
+  # Such a request must not be able to read the permanent API key: a token that
+  # expires and can be revoked would otherwise buy one that does neither.
+  def authenticated_by_personal_access_token?
+    !!@authenticated_by_personal_access_token
   end
 
   # Return true if the user is allowed to do the specified action on a specific context

@@ -938,8 +938,27 @@ bin/rails test test/integration/routing/api_audit_events_test.rb
 The audit log adds a migration, so `rake db:migrate` (and `RAILS_ENV=test rake db:migrate`) has to be
 re-run on an existing checkout before the server will boot.
 
-**CI status.** Redmine's own `Tests` workflow is green on this branch — all nine cells of its matrix
-(SQLite, PostgreSQL, MySQL × Ruby 3.2, 3.3, 3.4) plus the Chrome system-test job. The `Lint` workflow
+**CI status.** Redmine's own `Tests` workflow passes on this branch — all nine cells of its matrix
+(SQLite, PostgreSQL, MySQL × Ruby 3.2, 3.3, 3.4) plus the Chrome system-test job — most recently in
+full at commit `d27baa506`, which is the last commit that changed any code.
+
+**Two of Redmine's own tests flake, and the proof that they flake is unusually clean.** The commit
+after that one, `5d3073dbb`, is a **documentation-only** change — `git diff --stat d27baa506..5d3073dbb`
+is `README.md | 141 +++---` and nothing else — and its run reported three failures:
+`OauthProviderSystemTest#test_application_creation_and_authorization` in the Chrome job, and
+`IssuesControllerTest#test_index_sort_by_spent_hours` plus `test_index_sort_by_total_spent_hours` in
+the `mysql2 ruby-3.4` cell alone. A markdown edit cannot break a browser-driven OAuth authorization
+flow or the ordering of a `spent_hours` sort. All three are upstream Redmine tests that this branch
+does not touch, and the same suite failed once earlier on this branch (`f8af5d282`) and passed on the
+commit before and after.
+
+This is recorded rather than smoothed over because a reviewer will see a red tick and deserves to know
+which failures are ours. The honest summary is: **no test this branch adds or touches has failed in
+CI**, and the flakes are in Redmine's own suite, reproduced against an unchanged tree. A local
+full-suite run also failed once in five for a test whose identity went uncaptured, which is likely the
+same phenomenon seen from the other side.
+
+The `Lint` workflow
 is **red for a pre-existing reason unrelated to this branch**: its `bundle-audit` job reports
 advisories against Rails 7.2.3, the version the `6.1.2` tag pins in `Gemfile:5` as an exact version
 rather than a pessimistic constraint, so bundler cannot resolve the patch release the advisories ask

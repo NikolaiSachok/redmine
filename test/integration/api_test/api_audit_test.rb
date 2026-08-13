@@ -286,6 +286,77 @@ class Redmine::ApiTest::ApiAuditTest < Redmine::ApiTest::Base
     assert_not_includes haystack, token.token_digest
   end
 
+  # A refused token must still be named. credential_type is derived from the
+  # rmpat_ prefix and so was already correct on failure, but the id was stamped
+  # only on the authenticated user object -- and a refusal produces no
+  # authenticated user, so the row said "a token failed" without saying which.
+  # That is the first question the authentication-failures half of the default
+  # level exists to answer, and README.md documents the column as "which token".
+  #
+  # Each refusal reason is asserted separately because they fail at different
+  # points: expired? and the owner checks are three distinct clauses of
+  # usable?, and a revoked token has no row at all.
+  def test_a_refused_token_should_be_recorded_with_its_id
+    user = User.find_by_login('jsmith')
+
+    expired = PersonalAccessToken.create!(:user => user, :name => 'expired', :scope_preset => 'full')
+    expired.update_column(:expires_on, Date.today - 1)
+
+    locked_owner = User.find_by_login('dlopper')
+    locked = PersonalAccessToken.create!(:user => locked_owner, :name => 'locked-owner', :scope_preset => 'full')
+    locked_owner.update!(:status => User::STATUS_LOCKED)
+
+    {expired => 'expired', locked => 'locked owner'}.each do |token, reason|
+      ApiAuditEvent.delete_all
+
+      with_settings :rest_api_audit_level => 'writes' do
+        get '/users/current.json', :headers => {'X-Redmine-API-Key' => token.value}
+        assert_response :unauthorized, "#{reason}: expected the token to be refused"
+      end
+
+      event = ApiAuditEvent.last
+      assert_not_nil event, "#{reason}: the refusal was not recorded at all"
+      assert_equal ApiAuditEvent::CREDENTIAL_PERSONAL_ACCESS_TOKEN, event.credential_type, reason
+      assert_equal token.id, event.personal_access_token_id,
+                   "#{reason}: the log says a token was refused but not which one"
+    end
+  end
+
+  # The complement, and the reason this cannot be implemented by simply
+  # recording whatever was presented: a value matching no token at all has no
+  # id, and inventing one would be worse than the gap it closes.
+  def test_a_token_value_matching_no_row_should_record_no_id
+    with_settings :rest_api_audit_level => 'writes' do
+      get '/users/current.json',
+          :headers => {'X-Redmine-API-Key' => "#{PersonalAccessToken::PREFIX}#{'0' * 40}"}
+      assert_response :unauthorized
+    end
+
+    event = ApiAuditEvent.last
+    assert_equal ApiAuditEvent::CREDENTIAL_PERSONAL_ACCESS_TOKEN, event.credential_type
+    assert_nil event.personal_access_token_id
+  end
+
+  # A revoked token is a value that no longer resolves, so it behaves like the
+  # unknown value above rather than like an expired one. Pinned so the
+  # difference is a stated property and not a surprise when reading the log.
+  def test_a_revoked_token_should_record_no_id_because_its_row_is_gone
+    user = User.find_by_login('jsmith')
+    token = PersonalAccessToken.create!(:user => user, :name => 'revoked', :scope_preset => 'full')
+    value = token.value
+    token.destroy
+
+    with_settings :rest_api_audit_level => 'writes' do
+      get '/users/current.json', :headers => {'X-Redmine-API-Key' => value}
+      assert_response :unauthorized
+    end
+
+    event = ApiAuditEvent.last
+    assert_equal ApiAuditEvent::CREDENTIAL_PERSONAL_ACCESS_TOKEN, event.credential_type
+    assert_nil event.personal_access_token_id
+    assert_not_includes stored_values(event).join(' '), value
+  end
+
   def test_audit_002_a_password_offered_over_http_basic_should_not_reach_the_log
     password = 'Sup3rSecret!Passw0rd'
     user = User.generate!(:login => 'basicuser', :password => password, :password_confirmation => password)

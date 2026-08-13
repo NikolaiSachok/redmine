@@ -589,7 +589,7 @@ carries the two settings that govern it.
 | `user_id`, `login` | who the request acted **as** |
 | `impersonator_id`, `impersonator_login` | who actually held the credential, when `X-Redmine-Switch-User` was used |
 | `credential_type` | `api_key`, `personal_access_token`, `oauth` or `http_basic` |
-| `personal_access_token_id` | **which token**, by id |
+| `personal_access_token_id` | **which token**, by id — including when the token was *refused*, so an authentication failure names the credential that failed. Empty only when the value matched no token at all (an unknown value, or one already revoked), where there is no id to record |
 | `http_method`, `endpoint`, `path` | what was called — `issues#create`, `POST`, `/issues.json` |
 | `ip` | where from |
 | `status` | what came back |

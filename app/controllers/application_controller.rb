@@ -942,6 +942,30 @@ class ApplicationController < ActionController::Base
   # recorded there has been silently dropped by exactly that.
   attr_reader :api_audit_impersonator
 
+  # Which personal access token this request was made with, by id, for the
+  # audit log -- including when the token was *refused*.
+  #
+  # An accepted token is stamped on the user object by
+  # PersonalAccessToken.authenticate. A refused one cannot be: authenticate
+  # returns nil before the stamps, and for an expired token, a revoked owner or
+  # a locked account there is no authenticated user to hang it on. The row would
+  # then say credential_type='personal_access_token' with no id -- naming the
+  # kind of credential that failed but not which one, which is the first thing
+  # an administrator needs when reading authentication failures.
+  #
+  # The lookup only runs when a token was offered and nothing authenticated, so
+  # the success path is unchanged. A value matching no row still yields nil,
+  # which is the one case where nil is the honest answer.
+  def api_audit_personal_access_token_id
+    user = User.current
+    return user.authenticating_personal_access_token_id if user&.authenticated_by_personal_access_token?
+
+    value = personal_access_token_from_request
+    return nil if value.blank?
+
+    PersonalAccessToken.find_by_value(value)&.id
+  end
+
   # Names how the request authenticated, for the audit log. Never the value of
   # anything.
   #

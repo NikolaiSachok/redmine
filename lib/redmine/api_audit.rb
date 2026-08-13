@@ -102,9 +102,10 @@ module Redmine
           :impersonator_id => impersonator&.id,
           :impersonator_login => ApiAuditEvent.clean(impersonator&.login, User::LOGIN_LENGTH_LIMIT),
           :credential_type => controller.api_audit_credential_type,
-          # The token by id. Its value exists nowhere but the caller's own
-          # keeping -- only a digest of it is stored, and not in this table.
-          :personal_access_token_id => user&.authenticating_personal_access_token_id,
+          # The token by id, whether it was accepted or refused. Its value
+          # exists nowhere but the caller's own keeping -- only a digest of it
+          # is stored, and not in this table.
+          :personal_access_token_id => controller.api_audit_personal_access_token_id,
           :http_method => ApiAuditEvent.clean(request.request_method, 10),
           :endpoint => ApiAuditEvent.clean("#{controller.controller_path}##{controller.action_name}"),
           # request.path and never request.fullpath: the query string is where

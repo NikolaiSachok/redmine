@@ -24,9 +24,46 @@
 # instance per user, computes expiry per action rather than per record, and
 # looks tokens up by their cleartext value.
 class PersonalAccessToken < ApplicationRecord
+  # Reads the permissions column back as an array of symbols without ever
+  # handing the stored string to a YAML parser, so a crafted value cannot
+  # become an object graph. Copied from Role::PermissionsAttributeCoder, with
+  # one deliberate difference: nil round-trips as nil rather than as an empty
+  # array, because for a token those two mean opposite things -- nil is "not
+  # restricted", an empty list is "allowed nothing".
+  class PermissionsCoder
+    def self.load(str)
+      return nil if str.nil?
+
+      str.to_s.scan(/:([a-z0-9_]+)/).flatten.map(&:to_sym)
+    end
+
+    def self.dump(value)
+      return nil if value.nil?
+
+      YAML.dump(value.map(&:to_sym))
+    end
+  end
+
   # Identifies a Redmine personal access token on sight, in a log or a leaked
   # file, the way ghp_ and glpat- do for GitHub and GitLab.
   PREFIX = 'rmpat_'
+
+  # What the creation form offers. "Full access" stores no scope at all;
+  # "read only" and "custom" both store a resolved permission list, so a
+  # token's meaning is fixed at the moment it is issued and cannot widen later
+  # because a plugin added a permission.
+  SCOPE_PRESET_FULL = 'full'
+  SCOPE_PRESET_READ_ONLY = 'read_only'
+  SCOPE_PRESET_CUSTOM = 'custom'
+  SCOPE_PRESETS = [SCOPE_PRESET_FULL, SCOPE_PRESET_READ_ONLY, SCOPE_PRESET_CUSTOM].freeze
+
+  # Redmine's :read flag on a permission means "still allowed while the project
+  # is closed", which is not quite "does not write": closing and deleting a
+  # project are both flagged that way so that a closed project can be reopened
+  # or removed. They are the only two, and they are writes, so the read-only
+  # preset excludes them by name. Pinned by
+  # test_read_only_permissions_should_exclude_the_two_writes_redmine_marks_as_read.
+  NOT_ACTUALLY_READ_ONLY = [:close_project, :delete_project].freeze
 
   # Lifetimes offered by the creation form, in days. The first one is the
   # default: a credential that never expires has to be chosen deliberately.
@@ -39,6 +76,14 @@ class PersonalAccessToken < ApplicationRecord
 
   belongs_to :user
 
+  serialize :permissions, :coder => PermissionsCoder
+
+  # There is no path that edits a token, and there must not be: raising the
+  # scope of a token that is already in the wild is the same escalation as
+  # issuing an over-wide one. This makes that structural rather than a matter
+  # of which controller actions happen to exist.
+  attr_readonly :permissions
+
   validates :name, :presence => true, :length => {:maximum => 60}
   validates :name, :uniqueness => {:scope => :user_id, :case_sensitive => true}
   validates :token_digest, :presence => true, :uniqueness => true
@@ -46,7 +91,9 @@ class PersonalAccessToken < ApplicationRecord
   validate :expiry_must_not_be_in_the_past, :on => :create
   validate :lifetime_must_be_one_that_was_offered, :on => :create
   validate :expiry_must_respect_the_administrator_ceiling, :on => :create
+  validate :permissions_must_be_a_known_non_empty_set
 
+  before_validation :resolve_scope, :on => :create
   before_validation :generate_token, :on => :create
 
   scope :sorted, lambda {order(:created_at => :desc)}
@@ -58,6 +105,26 @@ class PersonalAccessToken < ApplicationRecord
   class << self
     def digest(value)
       Digest::SHA256.hexdigest(value.to_s)
+    end
+
+    # Every permission name a scope may contain. This is the same vocabulary
+    # Redmine already uses for OAuth2 scopes
+    # (config/initializers/30-redmine.rb), including the synthetic :admin,
+    # because the enforcement points are the same ones.
+    def scope_vocabulary
+      Redmine::AccessControl.permissions.collect(&:name) + [:admin]
+    end
+
+    # The permission list behind the "read only" preset.
+    def read_only_permissions
+      Redmine::AccessControl.permissions.select(&:read?).collect(&:name) - NOT_ACTUALLY_READ_ONLY
+    end
+
+    # The permissions the advanced picker offers, grouped the way the roles
+    # screen groups them. :admin is offered separately and only to
+    # administrators, since it is inert for anybody else.
+    def selectable_permissions
+      Redmine::AccessControl.permissions
     end
 
     # Administrator-set ceiling on token lifetime, in days, or nil when the
@@ -101,12 +168,20 @@ class PersonalAccessToken < ApplicationRecord
 
     # Returns the active user owning a usable token with this value, or nil,
     # recording the use on the token.
+    #
+    # How a request authenticated is a property of the request, not of the
+    # user, so it is stamped on the returned object and never persisted. Both
+    # stamps are set here, in one place, because the last time one of them was
+    # set somewhere else it was silently dropped by impersonation.
     def authenticate(value)
       token = find_by_value(value)
       return nil unless token&.usable?
 
       token.record_use
-      token.user
+      user = token.user
+      user.authenticated_by_personal_access_token = true
+      user.personal_access_token_scope = token.permissions
+      user
     end
   end
 
@@ -129,6 +204,18 @@ class PersonalAccessToken < ApplicationRecord
     update_column(:last_used_on, Time.now)
   end
 
+  # True when the token carries a permission scope. A token created before
+  # scopes existed has none, and keeps the full access it was issued with.
+  def scoped?
+    !permissions.nil?
+  end
+
+  # True when everything the scope names is a read. Used for the label only;
+  # enforcement never asks this question, it intersects the list.
+  def read_only?
+    scoped? && permissions.any? && (permissions - self.class.read_only_permissions).empty?
+  end
+
   # Lifetime in days, as offered by the creation form. Blank means no expiry:
   # the choice is explicit either way, rather than defaulting to a credential
   # that never dies.
@@ -139,7 +226,50 @@ class PersonalAccessToken < ApplicationRecord
     self.expires_on = days.present? ? User.current.today + days.to_i : nil
   end
 
+  # Which preset the creation form offered, if it was used. Purely an input:
+  # what is stored is always the resolved permission list, or nothing at all.
+  attr_reader :scope_preset
+
+  def scope_preset=(preset)
+    @scope_preset = preset.presence
+  end
+
   private
+
+  # Resolved in a callback rather than in the writer so the result cannot
+  # depend on the order the request happened to send its parameters in: a form
+  # that posted permissions[] after scope_preset=full would otherwise store the
+  # picker's selection and ignore the preset.
+  def resolve_scope
+    case @scope_preset
+    when SCOPE_PRESET_FULL
+      self.permissions = nil
+    when SCOPE_PRESET_READ_ONLY
+      self.permissions = self.class.read_only_permissions
+    when SCOPE_PRESET_CUSTOM
+      # The picker's own selection is what gets stored, validated below. The
+      # blanks come from the empty hidden field the form posts so that
+      # unticking everything submits something.
+      self.permissions = Array(permissions).reject(&:blank?)
+    end
+    self.permissions = permissions.map(&:to_sym) unless permissions.nil?
+  end
+
+  # A scope narrows, so an unknown name in the list can never widen anything --
+  # it simply intersects with nothing. It is still refused, because a scope
+  # that silently ignores half of what it was given is not a scope its owner
+  # can reason about. An *empty* list is refused for a harder reason: Rails'
+  # blank? treats it the same as no scope at all, and Role#allowed_permissions
+  # reads a blank scope as unrestricted, so storing one would fail open.
+  def permissions_must_be_a_known_non_empty_set
+    return if permissions.nil?
+
+    if permissions.empty?
+      errors.add(:permissions, :blank)
+    elsif (permissions - self.class.scope_vocabulary).any?
+      errors.add(:permissions, :invalid)
+    end
+  end
 
   def expiry_must_not_be_in_the_past
     if expires_on.present? && expires_on < User.current.today

@@ -974,6 +974,107 @@ class MyControllerTest < Redmine::ControllerTest
     assert_select 'input#sudo_password'
   end
 
+  def test_new_personal_access_token_should_default_to_the_read_only_preset
+    get :new_personal_access_token
+
+    assert_response :success
+    assert_select 'input#personal_access_token_scope_preset_read_only[checked=?]', 'checked'
+    assert_select 'input#personal_access_token_scope_preset_full'
+    assert_select 'input#personal_access_token_scope_preset_custom'
+    # the advanced picker, one checkbox per permission
+    assert_select 'input#personal_access_token_permissions_view_issues'
+    assert_select 'input#personal_access_token_permissions_edit_issues'
+  end
+
+  def test_new_personal_access_token_should_not_offer_the_admin_scope_to_an_ordinary_user
+    get :new_personal_access_token
+    assert_response :success
+    assert_select 'input#personal_access_token_permissions_admin', 0
+  end
+
+  def test_new_personal_access_token_should_offer_the_admin_scope_to_an_administrator
+    @request.session[:user_id] = 1
+    get :new_personal_access_token
+    assert_response :success
+    assert_select 'input#personal_access_token_permissions_admin'
+  end
+
+  def test_create_personal_access_token_with_the_read_only_preset
+    assert_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => 'CI', :expires_in_days => '30',
+                                   :scope_preset => 'read_only',
+                                   :permissions => ['', 'admin']}
+      }
+    end
+    assert_response :success
+
+    token = PersonalAccessToken.order(:id => :desc).first
+    # the preset wins over whatever the picker posted
+    assert_equal PersonalAccessToken.read_only_permissions.sort, token.permissions.sort
+    assert_not_includes token.permissions, :admin
+  end
+
+  def test_create_personal_access_token_with_a_custom_scope
+    assert_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => 'CI', :expires_in_days => '30',
+                                   :scope_preset => 'custom',
+                                   :permissions => ['', 'view_issues', 'log_time']}
+      }
+    end
+    assert_response :success
+    assert_equal [:view_issues, :log_time],
+                 PersonalAccessToken.order(:id => :desc).first.permissions
+  end
+
+  def test_create_personal_access_token_with_the_full_preset
+    post :create_personal_access_token, :params => {
+      :personal_access_token => {:name => 'CI', :expires_in_days => '30',
+                                 :scope_preset => 'full'}
+    }
+    assert_response :success
+    assert_nil PersonalAccessToken.order(:id => :desc).first.permissions
+  end
+
+  def test_create_personal_access_token_with_an_unknown_permission_should_redisplay_the_form
+    assert_no_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => 'CI', :expires_in_days => '30',
+                                   :scope_preset => 'custom',
+                                   :permissions => ['view_issues', 'not_a_permission']}
+      }
+    end
+    assert_response :success
+    assert_select '#errorExplanation'
+  end
+
+  def test_create_personal_access_token_with_an_empty_custom_scope_should_redisplay_the_form
+    assert_no_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => 'CI', :expires_in_days => '30',
+                                   :scope_preset => 'custom', :permissions => ['']}
+      }
+    end
+    assert_response :success
+    assert_select '#errorExplanation'
+  end
+
+  def test_personal_access_tokens_should_show_the_scope_of_each_token
+    PersonalAccessToken.create!(:user => User.find(2), :name => 'unscoped')
+    PersonalAccessToken.create!(:user => User.find(2), :name => 'read only',
+                                :scope_preset => 'read_only')
+    PersonalAccessToken.create!(:user => User.find(2), :name => 'custom',
+                                :scope_preset => 'custom',
+                                :permissions => ['view_issues', 'edit_issues'])
+    get :personal_access_tokens
+
+    assert_response :success
+    assert_select 'table.list td.scope', :text => 'Full access'
+    assert_select 'table.list td.scope', :text => 'Read-only'
+    assert_select 'table.list td.scope', :text => 'Custom (2 permissions)'
+  end
+
   def test_revoke_personal_access_token_of_another_user_should_respond_404
     token = PersonalAccessToken.create!(:user => User.find(3), :name => 'CI')
 

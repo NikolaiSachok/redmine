@@ -14,14 +14,14 @@ It is a deliberately small slice of a large ticket, branched from tag `6.1.2`. R
 | | |
 |---|---|
 | **Done** | PAT model with hashed storage and per-token expiry; REST API authentication; My account management screen; **administration overview of every user's tokens**; **an administrator ceiling on token lifetime**; **cleanup of long-expired rows**; unit, integration, functional and routing tests |
-| **Also done** | **CORS for the REST API** (pillar #6 of the same ticket) — an administrator allowlist of origins, off by default |
-| **Deferred** | Token scopes, audit logging, granular endpoint control, the 2FA posture, migration off the legacy API key — each an issue with reasoning |
+| **Also done** | **Token scopes** (pillar #2) — a read-only preset, a full-access preset and a permission picker, enforced through the mechanism Redmine already uses for OAuth2 scopes; **CORS for the REST API** (pillar #6) — an administrator allowlist of origins, off by default |
+| **Deferred** | Audit logging, granular endpoint control, the 2FA posture, migration off the legacy API key — each an issue with reasoning |
 | **Out of scope** | Rate limiting, excluded by the brief |
 | **Untouched** | The existing `api_key`, and `Token`, which it is built on |
 
-Deferred work is on the issue tracker rather than in this file's small print: issues #5, #6, #7, #10
-and #15, labelled `deferred`. Issue #8, CORS, started there and was implemented after the core was
-solid; it has its own section below. Two pre-existing weaknesses found while reading the code are recorded as #11
+Deferred work is on the issue tracker rather than in this file's small print: issues #6, #7, #10
+and #15, labelled `deferred`. Issues #5 (scopes) and #8 (CORS) started there and were implemented
+after the core was solid; each has its own section below. Two pre-existing weaknesses found while reading the code are recorded as #11
 and #12; #11 is now fixed, because the red team showed this feature makes it reachable with a new
 credential, and #12 stays open because closing it fully belongs to the OAuth path, not to this slice.
 
@@ -116,8 +116,10 @@ GitLab hash their tokens the same way and for the same reason.
 
 Naming these is part of the deliverable, so none of them are buried:
 
-- **No scopes.** A PAT carries its owner's full permissions. It is a better-managed credential, not a
-  narrower one. Issue #5 sketches how scoping could reuse the OAuth mechanism already in the codebase.
+- **A scope narrows where authorisation is asked, and nowhere else.** Scopes are enforced at the two
+  places Redmine's own OAuth2 scopes are enforced, so any code path that never calls
+  `User#allowed_to?` is not covered by them. The limits this leaves are listed in the scopes section
+  below, and measured rather than asserted.
 - **A write on every request.** `last_used_on` is updated on each successful authentication, so a busy
   API client causes one extra `UPDATE` per request. Coarsening it (only write if the stored value is
   older than *n* minutes) is the obvious optimisation and was left out as premature.
@@ -198,6 +200,87 @@ list would clean Rails' own log and nothing else: not the access log of any prox
 `Referer` headers, not browser history, not shell history. A credential that must never appear in a
 URL cannot be safely accepted from one, so the transport is refused rather than half-mitigated. The
 legacy key keeps all three transports; nothing existing was taken away.
+
+## Token scopes (issue #5, ticket pillar #2)
+
+The ticket asks for tokens "restricted to a subset of the user's permissions, e.g. read-only", and
+says to reuse the OAuth2 scope mechanism. That is what this does, rather than inventing a second
+authorisation system beside the one already in the tree.
+
+**The creation form offers three things.** *Read-only* (the default), *Full access*, and *Custom*
+with a permission picker grouped by project module, the same grouping the roles screen uses. What is
+stored is always the **resolved permission list**, never the name of the preset, so a token issued
+from the read-only preset cannot silently widen later because a plugin registered a new read
+permission. `NULL` means no scope at all — which is what every token issued before this feature has,
+and it means unrestricted.
+
+**Enforcement is Redmine's, not ours.** `PersonalAccessToken.authenticate` stamps the token's
+permission list onto the `User` object for that request only — never persisted, exactly like
+`oauth_scope` — and `User#allowed_to?` hands it to `role.allowed_to?(action, scope)`, where
+`Role#allowed_permissions` intersects it with what the role actually grants. `User#admin?` consults
+it too, the way it already did for OAuth: without `:admin` in the scope, an administrator's token is
+not an administrator's. There are four enforcement points in the codebase and this uses all four.
+
+The choices worth defending:
+
+- **A separate ivar, not `oauth_scope`.** Reusing `oauth_scope` would have been two lines shorter and
+  would have made `authorized_by_oauth?` true for token requests — and `authorized_by_oauth?` is what
+  `users/show.api.rsb` uses to decide whether to disclose the API key. Overloading it would have made
+  a security decision as a side effect of a naming convenience. `User#request_permission_scope`
+  returns whichever of the two applies; OAuth's behaviour is byte-for-byte unchanged.
+- **Intersection, never union.** A scope cannot grant. The check runs against the owner's roles at
+  request time, so a token naming `:delete_issues` for an owner whose role lost that permission
+  yesterday gets nothing. Proved with a test that removes the permission from the role and then asks.
+- **`NULL` is unrestricted, `[]` is nothing.** These are opposite meanings and Rails' `blank?`
+  collapses them: `Role#allowed_permissions` reads a blank scope as unrestricted, so an empty list
+  would **fail open**. It is refused by a model validation, and refused again in `User#allowed_to?`
+  in case one ever reaches there. Verified by deleting the second guard and watching the test fail.
+- **The scope is fixed at issue time.** There is no edit path, and `attr_readonly :permissions` makes
+  that structural rather than a property of which controller actions happen to exist. Raising the
+  scope of a token already in the wild is the same escalation as issuing an over-wide one.
+- **The stored column is never parsed as YAML.** It uses a custom coder that scans for symbol names
+  with a regular expression, copied from `Role::PermissionsAttributeCoder` for exactly this reason —
+  Redmine whitelists permitted YAML classes in `config/application.rb` because a serialized column is
+  a deserialization sink. The one deliberate difference from Role's coder is that `nil` round-trips
+  as `nil` instead of `[]`, because for a token those two mean opposite things.
+- **The read-only preset is not `Redmine::AccessControl`'s `read?` flag.** That flag means "still
+  allowed while the project is closed", which is not the same thing: `close_project` and
+  `delete_project` are both flagged `read` so that a closed project can be reopened or removed. A
+  preset built straight from the flag would have handed a read-only token the power to delete the
+  project it could read. The two are excluded by name and a test pins the exclusion.
+- **The scope survives `X-Redmine-Switch-User`.** Impersonation loads a fresh `User` record, and a
+  per-request property recorded on the old object is silently dropped — that bug already happened
+  once in this branch, to the flag that hides the API key. Verified the same way: by deleting the
+  carry-over line and watching the impersonated request perform a write its scope forbids.
+
+### The limits of scopes, measured
+
+- **Authorisation is scoped; visibility is not.** `Project.allowed_to_condition`
+  (`app/models/project.rb:211` and `:225`) calls `role.allowed_to?(permission)` with no scope, and
+  every `visible` scope in Redmine is built on it. So a controller action gated by `authorize` is
+  scoped and a listing action gated by visibility alone is not: `GET /projects/1.json` is refused to
+  a token whose scope omits `:view_project`, while `GET /projects.json` still lists projects.
+  Redmine's own OAuth2 scoping is porous in exactly the same place — this inherits the hole rather
+  than introducing it, and fixing it would change existing OAuth behaviour, which is a different
+  change from this one. Pinned by `test_scope_010_a_listing_gated_only_by_visibility_ignores_the_scope`
+  so that it is a stated cost rather than a surprise.
+- **Endpoints that ask no permission are outside the vocabulary.** The audit of every controller
+  declaring `accept_api_auth` found exactly three writes gated by nothing stronger than
+  `require_login`: `PUT /my/account`, and `PATCH`/`DELETE` on an attachment uploaded via `POST
+  /uploads` and not yet attached to anything (where the check degrades to "are you the author"). The
+  account one is a password-reset pivot — a token that could rewrite its owner's email address could
+  take the account — so a **scoped** token is refused it outright: a scope is written in permission
+  names, no permission means "edit your own account", and something no scope can name should not be
+  granted by default. Unscoped tokens and the legacy API key are unaffected. The attachment case is
+  left as a stated limit; it reaches only the caller's own orphaned upload.
+- **A scope narrows what you may do, not what a response contains.** Nothing here filters fields out
+  of a representation the caller was allowed to fetch.
+- **Reference data is readable by any API credential.** `require_admin_or_api_request` returns true
+  for every API request, so `/trackers.json`, `/issue_statuses.json`, `/roles.json` and the
+  enumerations answer a read-only token. That predates this branch and is unchanged by it.
+- **Scopes reach the API only.** Tokens authenticate `.json`/`.xml` requests, so there is no HTML or
+  Atom path for a scope to leak through.
+- **The legacy `api_key` is unscoped and unchanged**, on all three of its transports.
 
 ## Cross-origin resource sharing (issue #8, ticket pillar #6)
 
@@ -491,6 +574,46 @@ header, because the filter ran after `user_setup` and `user_setup` renders that 
 9 and 10 used to answer with `access-control-allow-origin` attached, because `?format=json` was enough
 to make Redmine call the request an API request. Both are re-runs of the exact commands from the
 attack ledger, against a server running the fixed code.
+
+### Token scopes, against the same running server
+
+Two tokens for the same **administrator**: one from the read-only preset, one with no scope. Values
+are read from a file into `$RO` / `$FULL` and never printed.
+
+```
+$ # 1. read-only token: a read
+GET  /issues/1.json          -> 200
+$ # 2. read-only token: the same issue, written
+PUT  /issues/1.json          -> 403
+$ # 3. read-only token: create, delete, log time
+POST /issues.json            -> 403
+DEL  /issues/1.json          -> 403
+POST /time_entries.json      -> 403
+$ # 4. the owner is an administrator; the token is not
+GET  /users.json (read-only) -> 403
+GET  /users.json (full)      -> 200
+$ # 5. account self-service is not expressible as a permission, so it is refused
+PUT  /my/account.json (r-o)  -> 403
+PUT  /my/account.json (full) -> 204
+$ # 6. the unscoped token can still do all of it
+PUT  /issues/1.json (full)   -> 204
+$ # subject after all of the above:
+rewritten by the unscoped token
+```
+
+The subject at the end is the point: the only write that landed is the one made by the token that was
+allowed to make it.
+
+And the impersonation case, with a third token scoped to `[:admin, :view_issues]`:
+
+```
+$ # token scope [admin, view_issues], owned by admin, impersonating "member"
+GET  /users/current.json     -> login member
+GET  /issues/1.json          -> 200
+PUT  /issues/1.json          -> 403   (member may edit; the scope carried over refuses)
+$ # the same impersonation with an unscoped token is unchanged
+PUT  /issues/1.json (full)   -> 204
+```
 
 ## Assumptions
 

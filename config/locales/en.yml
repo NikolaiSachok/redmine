@@ -203,6 +203,7 @@ en:
   notice_issue_not_reopenable_by_closed_parent_issue: "This issue cannot be reopened because its parent issue is closed."
   notice_invalid_watcher: "Invalid watcher: User will not receive any notifications because they do not have access to view this object."
 
+  error_scoped_token_cannot_update_account: A personal access token restricted to a scope cannot change its owner's account.
   error_can_t_load_default_data: "Default configuration could not be loaded: %{value}"
   error_scm_not_found: "The entry or revision was not found in the repository."
   error_scm_command_failed: "An error occurred when trying to access the repository: %{value}"
@@ -335,6 +336,7 @@ en:
   field_last_login_on: Last sign in
   field_expires_on: Expires
   field_last_used_on: Last used
+  field_permissions: Permissions
   field_passwd_changed_on: Password last changed
   field_language: Language
   field_effective_date: Due date
@@ -1040,6 +1042,11 @@ en:
   label_personal_access_token_plural: Personal access tokens
   label_personal_access_token_new: New personal access token
   label_personal_access_token_never_used: Never used
+  label_personal_access_token_scope: Scope
+  label_personal_access_token_scope_full: Full access
+  label_personal_access_token_scope_read_only: Read-only
+  label_personal_access_token_scope_custom: Custom
+  label_personal_access_token_scope_custom_count: "Custom (%{count} permissions)"
   label_expiration_x_days: "%{count} days"
   label_expiration_none: No expiration
   label_profile: Profile
@@ -1290,6 +1297,10 @@ en:
   text_workflow_edit: Select a role and a tracker to edit the workflow
   text_are_you_sure: Are you sure?
   text_personal_access_token_no_expiration: A token with no expiration date stays valid until it is revoked.
+  text_personal_access_token_scope_full: The token can do everything its owner can do.
+  text_personal_access_token_scope_read_only: The token may read; every write is refused.
+  text_personal_access_token_scope_custom: The token is limited to the permissions selected below.
+  text_personal_access_token_scope_narrows_only: A scope can only narrow. A token never gains a permission its owner does not have, and a token restricted to a scope cannot change its owner's account.
   text_personal_access_token_max_lifetime: Maximum number of days a personal access token may be valid for. 0 means no limit, and lets users create tokens that never expire.
   text_rest_api_cors_origins: Comma-separated list of origins that may call the REST API from a browser, for example https://app.example.com, https://staging.example.com:8443. Scheme, host and port must match exactly. Leave empty to allow none. Requests are never authenticated by cookie across origins, so callers must send an API key or a personal access token.
   text_journal_changed: "%{label} changed from %{old} to %{new}"

@@ -17,6 +17,64 @@
     </em>
   </p>
 </div>
+
+<fieldset class="box" id="personal-access-token-scope">
+  <legend><%= l(:label_personal_access_token_scope) %></legend>
+  <p>
+    <label class="block">
+      <%= f.radio_button :scope_preset, PersonalAccessToken::SCOPE_PRESET_READ_ONLY %>
+      <%= l(:label_personal_access_token_scope_read_only) %>
+      <em class="info"><%= l(:text_personal_access_token_scope_read_only) %></em>
+    </label>
+    <label class="block">
+      <%= f.radio_button :scope_preset, PersonalAccessToken::SCOPE_PRESET_FULL %>
+      <%= l(:label_personal_access_token_scope_full) %>
+      <em class="info"><%= l(:text_personal_access_token_scope_full) %></em>
+    </label>
+    <label class="block">
+      <%= f.radio_button :scope_preset, PersonalAccessToken::SCOPE_PRESET_CUSTOM %>
+      <%= l(:label_personal_access_token_scope_custom) %>
+      <em class="info"><%= l(:text_personal_access_token_scope_custom) %></em>
+    </label>
+  </p>
+  <em class="info"><%= l(:text_personal_access_token_scope_narrows_only) %></em>
+
+  <fieldset class="collapsible collapsed" id="personal-access-token-permissions">
+    <legend onclick="toggleFieldset(this);" class="icon icon-collapsed">
+      <%= sprite_icon("angle-right", rtl: true) %>
+      <%= l(:label_permissions) %>
+    </legend>
+    <div class="hidden">
+      <% if User.current.admin? %>
+      <fieldset id="scope_module_administration">
+        <legend><%= l(:label_administration) %></legend>
+        <label class="floating">
+          <%= check_box_tag 'personal_access_token[permissions][]', 'admin',
+                            @personal_access_token.permissions.to_a.include?(:admin),
+                            :id => 'personal_access_token_permissions_admin' %>
+          <%= l(:label_administration) %>
+        </label>
+      </fieldset>
+      <% end %>
+      <% PersonalAccessToken.selectable_permissions.group_by {|p| p.project_module.to_s}.sort.each do |mod, permissions| %>
+      <% module_name = mod.blank? ? 'module_project' : "module_#{mod}" %>
+      <fieldset id="scope_<%= module_name %>">
+        <legend><%= toggle_checkboxes_link("#scope_#{module_name}\ input") %><%= mod.blank? ? l(:label_project) : l_or_humanize(mod, :prefix => 'project_module_') %></legend>
+        <% permissions.each do |permission| %>
+        <label class="floating">
+          <%= check_box_tag 'personal_access_token[permissions][]', permission.name,
+                            @personal_access_token.permissions.to_a.include?(permission.name),
+                            :id => "personal_access_token_permissions_#{permission.name}" %>
+          <%= l_or_humanize(permission.name, :prefix => 'permission_') %>
+        </label>
+        <% end %>
+      </fieldset>
+      <% end %>
+      <%= hidden_field_tag 'personal_access_token[permissions][]', '' %>
+    </div>
+  </fieldset>
+</fieldset>
+
 <p><%= submit_tag l(:button_create) %></p>
 <% end %>
 

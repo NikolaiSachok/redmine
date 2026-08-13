@@ -36,6 +36,18 @@ class PersonalAccessTokensControllerTest < Redmine::ControllerTest
     assert_select 'table.list td.name', :text => 'dlopper token'
   end
 
+  def test_index_should_show_the_scope_of_each_token
+    PersonalAccessToken.create!(:user => User.find(2), :name => 'unscoped')
+    PersonalAccessToken.create!(:user => User.find(3), :name => 'read only',
+                                :scope_preset => 'read_only')
+
+    get :index
+
+    assert_response :success
+    assert_select 'table.list td.scope', :text => 'Full access'
+    assert_select 'table.list td.scope', :text => 'Read-only'
+  end
+
   def test_index_should_not_expose_any_token_value
     token = PersonalAccessToken.create!(:user => User.find(2), :name => 'CI')
     value = token.value

@@ -115,6 +115,7 @@ class User < Principal
   attr_accessor :remote_ip
   attr_writer   :oauth_scope
   attr_writer   :authenticated_by_personal_access_token
+  attr_accessor :personal_access_token_scope
 
   LOGIN_LENGTH_LIMIT = 60
   MAIL_LENGTH_LIMIT = 254
@@ -742,9 +743,10 @@ class User < Principal
   end
 
   def admin?
-    if authorized_by_oauth?
-      # when signed in via oauth, the user only acts as admin when the admin scope is set
-      super and @oauth_scope.include?(:admin)
+    if (scope = request_permission_scope)
+      # when the request is scoped -- by oauth or by a personal access token --
+      # the user only acts as admin when the admin scope is set
+      super and scope.include?(:admin)
     else
       super
     end
@@ -753,6 +755,19 @@ class User < Principal
   # true if the user has signed in via oauth
   def authorized_by_oauth?
     !@oauth_scope.nil?
+  end
+
+  # The permission scope this request is restricted to, or nil when it is not
+  # restricted. OAuth2 access tokens and personal access tokens use the same
+  # vocabulary -- permission names plus the synthetic :admin -- and the same
+  # enforcement points, and a request only ever carries one of them.
+  def request_permission_scope
+    authorized_by_oauth? ? @oauth_scope : @personal_access_token_scope
+  end
+
+  # true if this request is restricted by the scope of a personal access token
+  def scoped_by_personal_access_token?
+    !@personal_access_token_scope.nil?
   end
 
   # true if this request was authenticated by a personal access token.
@@ -772,6 +787,14 @@ class User < Principal
   # * nil with options[:global] set : check if user has at least one role allowed for this action,
   #   or falls back to Non Member / Anonymous permissions depending if the user is logged
   def allowed_to?(action, context, options={}, &block)
+    scope = request_permission_scope
+    # An explicitly empty scope allows nothing. Role#allowed_permissions reads a
+    # blank scope as "unrestricted", so an empty one has to be caught before it
+    # gets there or it would fail open. Only personal access tokens are checked:
+    # what an empty oauth scope means is Doorkeeper's existing behaviour and is
+    # left exactly as it was.
+    return false if scoped_by_personal_access_token? && scope.empty?
+
     if context && context.is_a?(Project)
       return false unless context.allows_to?(action)
       # Admin users are authorized for anything else
@@ -782,7 +805,7 @@ class User < Principal
 
       roles.any? do |role|
         (context.is_public? || role.member?) &&
-        role.allowed_to?(action, @oauth_scope) &&
+        role.allowed_to?(action, scope) &&
         (block ? yield(role, self) : true)
       end
     elsif context && context.is_a?(Array)
@@ -801,7 +824,7 @@ class User < Principal
       # authorize if user has at least one role that has this permission
       roles = self.roles.to_a | [builtin_role]
       roles.any? do |role|
-        role.allowed_to?(action, @oauth_scope) &&
+        role.allowed_to?(action, scope) &&
         (block ? yield(role, self) : true)
       end
     else

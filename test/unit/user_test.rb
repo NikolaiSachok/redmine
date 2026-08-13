@@ -1459,6 +1459,96 @@ class UserTest < ActiveSupport::TestCase
     assert user.allowed_to?(:view_issues, project)
   end
 
+  # --- personal access token scopes (issue #5) -----------------------------
+
+  def test_a_personal_access_token_scope_should_limit_project_permissions
+    user = User.find 2
+    project = Project.find 1
+    assert user.allowed_to?(:add_issues, project)
+    assert user.allowed_to?(:view_issues, project)
+
+    user.personal_access_token_scope = [:view_issues]
+    assert_not user.allowed_to?(:add_issues, project)
+    assert user.allowed_to?(:view_issues, project)
+  end
+
+  def test_a_personal_access_token_scope_should_limit_global_permissions
+    user = User.find 2
+    assert user.allowed_to?(:add_issues, nil, :global => true)
+
+    user.personal_access_token_scope = [:view_issues]
+    assert_not user.allowed_to?(:add_issues, nil, :global => true)
+    assert user.allowed_to?(:view_issues, nil, :global => true)
+  end
+
+  # ATTACKS.md SCOPE-003 / SCOPE-R6: a scope intersects, it never unions.
+  def test_scope_003_a_personal_access_token_scope_should_never_grant_what_the_owner_lacks
+    user = User.find 2
+    project = Project.find 1
+    Role.find(1).remove_permission!(:delete_issues)
+    assert_not user.reload.allowed_to?(:delete_issues, project)
+
+    user.personal_access_token_scope = [:view_issues, :delete_issues]
+    assert_not user.allowed_to?(:delete_issues, project)
+    assert user.allowed_to?(:view_issues, project)
+  end
+
+  # ATTACKS.md SCOPE-005 / SCOPE-R7: an admin bypass makes every other
+  # restriction cosmetic, so admin? consults the scope exactly as it does for
+  # oauth.
+  def test_scope_005_admin_should_be_limited_by_a_personal_access_token_scope
+    u = User.find_by_admin(true)
+    assert u.admin?
+
+    u.personal_access_token_scope = [:view_issues]
+    assert_not u.admin?
+
+    u.personal_access_token_scope = [:view_issues, :admin]
+    assert u.admin?
+
+    plain = User.find_by_admin(false)
+    plain.personal_access_token_scope = [:view_issues, :admin]
+    assert_not plain.admin?, 'the :admin scope must not make an ordinary user an administrator'
+  end
+
+  # ATTACKS.md SCOPE-008 / SCOPE-R6: Role#allowed_permissions reads a blank
+  # scope as unrestricted, so an empty one has to be caught before it gets
+  # there.
+  def test_scope_008_an_empty_personal_access_token_scope_should_allow_nothing
+    user = User.find 2
+    user.personal_access_token_scope = []
+    assert_not user.allowed_to?(:view_issues, Project.find(1))
+    assert_not user.allowed_to?(:view_issues, nil, :global => true)
+    assert_not user.admin?
+
+    admin = User.find 1
+    admin.personal_access_token_scope = []
+    assert_not admin.admin?
+    assert_not admin.allowed_to?(:view_issues, Project.find(1))
+  end
+
+  # SCOPE-R10: a token issued before scopes existed carries no scope, and no
+  # scope means unrestricted rather than empty.
+  def test_no_personal_access_token_scope_should_restrict_nothing
+    user = User.find 2
+    user.personal_access_token_scope = nil
+    assert_not user.scoped_by_personal_access_token?
+    assert_nil user.request_permission_scope
+    assert user.allowed_to?(:add_issues, Project.find(1))
+  end
+
+  # SCOPE-R12 and the hard rule that oauth behaviour is unchanged: when both
+  # are somehow present the oauth scope is the one that applies, exactly as it
+  # did before token scopes existed.
+  def test_the_oauth_scope_should_still_win_when_both_are_set
+    user = User.find 2
+    user.oauth_scope = [:view_issues, :add_issues]
+    user.personal_access_token_scope = [:view_issues]
+    assert user.authorized_by_oauth?
+    assert_equal [:view_issues, :add_issues], user.request_permission_scope
+    assert user.allowed_to?(:add_issues, Project.find(1))
+  end
+
   def test_destroy_should_delete_associated_reactions
     users(:users_004).reactions.create!(
       [

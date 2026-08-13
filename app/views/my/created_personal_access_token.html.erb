@@ -19,6 +19,9 @@
     <em class="info">
       <%= l(:field_expires_on) %>:
       <%= @personal_access_token.expires_on ? format_date(@personal_access_token.expires_on) : l(:label_expiration_none) %>
+      &mdash;
+      <%= l(:label_personal_access_token_scope) %>:
+      <span title="<%= personal_access_token_scope_title(@personal_access_token) %>"><%= personal_access_token_scope_label(@personal_access_token) %></span>
     </em>
   </p>
 </div>

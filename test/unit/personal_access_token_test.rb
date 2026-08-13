@@ -203,4 +203,143 @@ class PersonalAccessTokenTest < ActiveSupport::TestCase
     @user.destroy
     assert_nil PersonalAccessToken.find_by_id(token.id)
   end
+  # --- scopes (issue #5) ---------------------------------------------------
+
+  def test_a_token_should_be_unscoped_by_default
+    token = PersonalAccessToken.create!(:user => @user, :name => 'CI')
+    assert_nil token.reload.permissions
+    assert_not token.scoped?
+    assert_not token.read_only?
+  end
+
+  # Redmine's :read flag means "still allowed while the project is closed",
+  # which is not the same as "does not write": closing and deleting a project
+  # are both flagged that way. A preset built straight from the flag would hand
+  # a read-only token the power to delete the project it can read.
+  def test_read_only_permissions_should_exclude_the_two_writes_redmine_marks_as_read
+    flagged = Redmine::AccessControl.permissions.select(&:read?).collect(&:name)
+    assert_includes flagged, :delete_project
+    assert_includes flagged, :close_project
+
+    assert_not_includes PersonalAccessToken.read_only_permissions, :delete_project
+    assert_not_includes PersonalAccessToken.read_only_permissions, :close_project
+    assert_includes PersonalAccessToken.read_only_permissions, :view_issues
+    assert_equal flagged.size - 2, PersonalAccessToken.read_only_permissions.size
+  end
+
+  def test_read_only_preset_should_store_the_resolved_permission_list
+    token = PersonalAccessToken.create!(:user => @user, :name => 'CI',
+                                        :scope_preset => 'read_only')
+    assert_equal PersonalAccessToken.read_only_permissions.sort, token.reload.permissions.sort
+    assert token.scoped?
+    assert token.read_only?
+    assert_not_includes token.permissions, :admin
+  end
+
+  def test_custom_preset_should_store_the_selection_as_symbols
+    token = PersonalAccessToken.create!(:user => @user, :name => 'CI',
+                                        :scope_preset => 'custom',
+                                        :permissions => ['', 'view_issues', 'edit_issues'])
+    assert_equal [:view_issues, :edit_issues], token.reload.permissions
+    assert token.scoped?
+    assert_not token.read_only?
+  end
+
+  # The preset has to win over whatever the picker posted, whichever order the
+  # request happened to send the two parameters in.
+  def test_full_preset_should_win_over_a_posted_permission_list
+    token = PersonalAccessToken.create!(:user => @user, :name => 'CI',
+                                        :permissions => ['admin'],
+                                        :scope_preset => 'full')
+    assert_nil token.reload.permissions
+
+    other = PersonalAccessToken.create!(:user => @user, :name => 'CI2',
+                                        :scope_preset => 'full',
+                                        :permissions => ['admin'])
+    assert_nil other.reload.permissions
+  end
+
+  # ATTACKS.md SCOPE-008: the classic fail-open. Role#allowed_permissions reads
+  # a blank scope as "unrestricted", so an empty list must never be stored.
+  def test_scope_008_an_empty_scope_should_be_refused
+    token = PersonalAccessToken.new(:user => @user, :name => 'CI',
+                                    :scope_preset => 'custom', :permissions => [''])
+    assert_not token.save
+    assert token.errors[:permissions].present?
+
+    assert_not PersonalAccessToken.new(:user => @user, :name => 'CI',
+                                       :permissions => []).save
+  end
+
+  # ATTACKS.md SCOPE-008: an unknown name cannot widen anything, since a scope
+  # only intersects -- but a scope that silently drops half of what it was given
+  # is not one its owner can reason about.
+  def test_scope_008_an_unknown_permission_should_be_refused
+    token = PersonalAccessToken.new(:user => @user, :name => 'CI',
+                                    :scope_preset => 'custom',
+                                    :permissions => ['view_issues', 'not_a_permission'])
+    assert_not token.save
+    assert token.errors[:permissions].present?
+  end
+
+  def test_admin_should_be_part_of_the_scope_vocabulary
+    assert_includes PersonalAccessToken.scope_vocabulary, :admin
+    assert PersonalAccessToken.new(:user => @user, :name => 'CI',
+                                   :scope_preset => 'custom',
+                                   :permissions => ['admin']).save
+  end
+
+  # ATTACKS.md SCOPE-007: the column is a stored string an attacker with write
+  # access to the database could craft. It is never handed to a YAML parser --
+  # the coder scans for symbol names and nothing else -- so there is no
+  # deserialization sink here, whatever the value contains.
+  def test_scope_007_the_permissions_column_should_never_be_deserialized_as_yaml
+    token = PersonalAccessToken.create!(:user => @user, :name => 'CI',
+                                        :scope_preset => 'read_only')
+    payload = "--- !ruby/object:Gem::Requirement\nrequirements: :view_issues\n"
+    # written straight to the row, the way a value crafted outside ActiveRecord
+    # would arrive
+    PersonalAccessToken.connection.execute(
+      "UPDATE personal_access_tokens SET permissions = #{PersonalAccessToken.connection.quote(payload)} WHERE id = #{token.id}"
+    )
+
+    loaded = token.reload.permissions
+    assert_equal [:view_issues], loaded
+    assert loaded.all?(Symbol), "expected only symbols, got #{loaded.inspect}"
+    assert_equal [:view_issues], PersonalAccessToken::PermissionsCoder.load(payload)
+  end
+
+  def test_the_permissions_coder_should_round_trip_nil_as_nil
+    assert_nil PersonalAccessToken::PermissionsCoder.load(nil)
+    assert_nil PersonalAccessToken::PermissionsCoder.dump(nil)
+    dumped = PersonalAccessToken::PermissionsCoder.dump(['view_issues', :edit_issues])
+    assert_equal [:view_issues, :edit_issues], PersonalAccessToken::PermissionsCoder.load(dumped)
+  end
+
+  # ATTACKS.md SCOPE-004: raising the scope of a token already in the wild is
+  # the same escalation as issuing an over-wide one, so the column is readonly.
+  def test_scope_004_the_scope_should_not_be_editable_after_creation
+    token = PersonalAccessToken.create!(:user => @user, :name => 'CI',
+                                        :scope_preset => 'read_only')
+    token.permissions = [:admin]
+    token.save!
+    assert_equal PersonalAccessToken.read_only_permissions.sort, token.reload.permissions.sort
+  end
+
+  def test_authenticate_should_stamp_the_scope_on_the_returned_user
+    token = PersonalAccessToken.create!(:user => @user, :name => 'CI',
+                                        :scope_preset => 'read_only')
+    user = PersonalAccessToken.authenticate(token.value)
+    assert user.authenticated_by_personal_access_token?
+    assert user.scoped_by_personal_access_token?
+    assert_equal token.reload.permissions.sort, user.personal_access_token_scope.sort
+  end
+
+  def test_authenticate_should_leave_an_unscoped_token_unscoped
+    token = PersonalAccessToken.create!(:user => @user, :name => 'CI')
+    user = PersonalAccessToken.authenticate(token.value)
+    assert user.authenticated_by_personal_access_token?
+    assert_not user.scoped_by_personal_access_token?
+    assert_nil user.request_permission_scope
+  end
 end

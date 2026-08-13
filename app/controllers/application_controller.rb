@@ -181,6 +181,7 @@ class ApplicationController < ActionController::Base
           # the user object. Impersonation loads a fresh record, so carry it
           # over or the restrictions that depend on it silently stop applying.
           su.authenticated_by_personal_access_token = user.authenticated_by_personal_access_token?
+          su.personal_access_token_scope = user.personal_access_token_scope
           logger.info("  User switched by: #{user.login} (id=#{user.id})") if logger
           user = su
         else

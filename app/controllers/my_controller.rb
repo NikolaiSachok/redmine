@@ -25,11 +25,14 @@ class MyController < ApplicationController
 
   accept_api_auth :account
 
+  before_action :deny_account_update_by_a_scoped_token, :only => :account
+
   require_sudo_mode :account, only: :put
   require_sudo_mode :reset_atom_key, :reset_api_key, :show_api_key, :destroy
   require_sudo_mode :create_personal_access_token, :revoke_personal_access_token
 
   helper :issues
+  helper :personal_access_tokens
   helper :users
   helper :custom_fields
   helper :queries
@@ -156,8 +159,11 @@ class MyController < ApplicationController
 
   def new_personal_access_token
     @user = User.current
+    # Read-only by default, for the same reason the form defaults to an expiry:
+    # a credential that can write should be asked for, not arrived at.
     @personal_access_token =
-      PersonalAccessToken.new(:expires_in_days => PersonalAccessToken.default_lifetime_in_days)
+      PersonalAccessToken.new(:expires_in_days => PersonalAccessToken.default_lifetime_in_days,
+                              :scope_preset => PersonalAccessToken::SCOPE_PRESET_READ_ONLY)
   end
 
   def create_personal_access_token
@@ -250,9 +256,25 @@ class MyController < ApplicationController
 
   private
 
+  # Editing your own account is not expressible in the vocabulary a token scope
+  # is written in -- there is no permission for it -- so a scoped token cannot
+  # carry consent for it, and a scope that named every permission there is would
+  # still not name this one. Rather than let the narrowest read-only token
+  # rewrite its owner's email address, which is a password-reset pivot, the
+  # write is refused. Reads are unaffected, and an unscoped token behaves as it
+  # did before. The equivalent hole is open for oauth scopes and is left alone:
+  # closing it would change existing behaviour.
+  def deny_account_update_by_a_scoped_token
+    return true unless request.put? || request.patch?
+    return true unless User.current.scoped_by_personal_access_token?
+
+    render_error :message => l(:error_scoped_token_cannot_update_account), :status => 403
+    false
+  end
+
   def personal_access_token_params
     if params[:personal_access_token].present?
-      params.require(:personal_access_token).permit(:name, :expires_in_days)
+      params.require(:personal_access_token).permit(:name, :expires_in_days, :scope_preset, :permissions => [])
     else
       {}
     end

@@ -1,0 +1,45 @@
+<h2><%= @query.new_record? ? l(:label_api_audit_event_plural) : @query.name %></h2>
+
+<% if ApiAuditEvent.level == ApiAuditEvent::LEVEL_OFF %>
+  <p class="warning"><%= l(:text_api_audit_disabled) %></p>
+<% end %>
+
+<%= form_tag(api_audit_events_path, :method => :get, :id => 'query_form') do %>
+  <%= render :partial => 'queries/query_form' %>
+<% end %>
+
+<% if @query.valid? %>
+  <% if @events.empty? %>
+    <p class="nodata"><%= l(:label_no_data) %></p>
+  <% else %>
+    <%= render :partial => 'list', :locals => {:events => @events} %>
+    <span class="pagination"><%= pagination_links_full @event_pages, @event_count %></span>
+  <% end %>
+  <% other_formats_links do |f| %>
+    <%= f.link_to_with_query_parameters 'CSV', {}, :onclick => "showModal('csv-export-options', '350px'); return false;" %>
+  <% end %>
+
+  <div id="csv-export-options" style="display:none;">
+    <h3 class="title"><%= l(:label_export_options, :export_format => 'CSV') %></h3>
+    <%= form_tag(api_audit_events_path(:format => 'csv'), :method => :get, :id => 'csv-export-form') do %>
+    <%= query_as_hidden_field_tags(@query) %>
+    <%= hidden_field_tag('query_name', @query.name) %>
+    <p>
+      <label><%= radio_button_tag 'c[]', '', true %> <%= l(:description_selected_columns) %></label><br />
+      <label><%= radio_button_tag 'c[]', 'all_inline' %> <%= l(:description_all_columns) %></label>
+    </p>
+    <%= export_csv_encoding_select_tag %>
+    <%= export_csv_separator_select_tag %>
+    <p class="buttons">
+      <%= submit_tag l(:button_export), :name => nil, :onclick => "hideModal(this);", :data => {:disable_with => false} %>
+      <%= link_to_function l(:button_cancel), "hideModal(this);" %>
+    </p>
+    <% end %>
+  </div>
+<% end %>
+
+<% content_for :sidebar do %>
+  <%= render_sidebar_queries(ApiAuditQuery, nil) %>
+<% end %>
+
+<% html_title(@query.new_record? ? l(:label_api_audit_event_plural) : @query.name) -%>

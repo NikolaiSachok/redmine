@@ -333,6 +333,27 @@ start_of_week:
 rest_api_enabled:
   default: 0
   security_notifications: 1
+personal_access_token_max_lifetime_days:
+  default: 0
+  format: int
+  security_notifications: 1
+rest_api_cors_origins:
+  default: ''
+  security_notifications: 1
+rest_api_disabled_endpoints:
+  serialized: true
+  default: []
+  security_notifications: 1
+# off / writes / all. The default records writes and refused requests, which is
+# what an audit trail is for, and not the polling GETs that are 90-95% of an
+# instance's API traffic.
+rest_api_audit_level:
+  default: 'writes'
+  security_notifications: 1
+rest_api_audit_retention_days:
+  default: 90
+  format: int
+  security_notifications: 1
 jsonp_enabled:
   default: 0
   security_notifications: 1

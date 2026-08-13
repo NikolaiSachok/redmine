@@ -1,0 +1,40 @@
+<div class="contextual">
+<%= link_to sprite_icon('add', l(:label_personal_access_token_new)), new_my_personal_access_token_path, :class => 'icon icon-add' %>
+</div>
+
+<%= title [l(:label_my_account), my_account_path], l(:label_personal_access_token_plural) %>
+
+<% if @personal_access_tokens.any? %>
+<div class="autoscroll">
+<table class="list">
+  <thead>
+    <tr>
+      <th><%= l(:field_name) %></th>
+      <th><%= l(:label_personal_access_token_scope) %></th>
+      <th><%= l(:field_created_on) %></th>
+      <th><%= l(:field_expires_on) %></th>
+      <th><%= l(:field_last_used_on) %></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    <% @personal_access_tokens.each do |token| %>
+    <tr id="personal-access-token-<%= token.id %>" class="<%= cycle('odd', 'even') %> <%= personal_access_token_row_class(token) %>">
+      <td class="name"><span><%= token.name %></span></td>
+      <td class="scope" title="<%= personal_access_token_scope_title(token) %>"><%= personal_access_token_scope_label(token) %></td>
+      <td><%= format_time(token.created_at) %></td>
+      <td class="expires-on"><%= personal_access_token_expiry_label(token) %></td>
+      <td><%= token.last_used_on ? format_time(token.last_used_on) : l(:label_personal_access_token_never_used) %></td>
+      <td class="buttons"><%= delete_link my_personal_access_token_path(token) %></td>
+    </tr>
+    <% end %>
+  </tbody>
+</table>
+</div>
+<% else %>
+<p class="nodata"><%= l(:label_no_data) %></p>
+<% end %>
+
+<% content_for :sidebar do %>
+<%= render :partial => 'my/sidebar' %>
+<% end %>

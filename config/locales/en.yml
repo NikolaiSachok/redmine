@@ -179,6 +179,9 @@ en:
   notice_email_error: "An error occurred while sending mail (%{value})"
   notice_feeds_access_key_reseted: Your Atom access key was reset.
   notice_api_access_key_reseted: Your API access key was reset.
+  notice_personal_access_token_created: Personal access token created. Copy it now, it will not be shown again.
+  notice_personal_access_token_revoked: "Personal access token \"%{name}\" was revoked."
+  notice_personal_access_token_revoked_for: "Personal access token \"%{name}\" of %{user} was revoked."
   notice_failed_to_save_issues: "Failed to save %{count} issue(s) on %{total} selected: %{ids}."
   notice_failed_to_save_time_entries: "Failed to save %{count} time entrie(s) on %{total} selected: %{ids}."
   notice_failed_to_save_members: "Failed to save member(s): %{errors}."
@@ -200,6 +203,7 @@ en:
   notice_issue_not_reopenable_by_closed_parent_issue: "This issue cannot be reopened because its parent issue is closed."
   notice_invalid_watcher: "Invalid watcher: User will not receive any notifications because they do not have access to view this object."
 
+  error_scoped_token_cannot_update_account: A personal access token restricted to a scope cannot change its owner's account.
   error_can_t_load_default_data: "Default configuration could not be loaded: %{value}"
   error_scm_not_found: "The entry or revision was not found in the repository."
   error_scm_command_failed: "An error occurred when trying to access the repository: %{value}"
@@ -330,6 +334,10 @@ en:
   field_mail_notification: Email notifications
   field_admin: Administrator
   field_last_login_on: Last sign in
+  field_expires_on: Expires
+  field_last_used_on: Last used
+  field_permissions: Permissions
+  field_scope_preset: Scope
   field_passwd_changed_on: Password last changed
   field_language: Language
   field_effective_date: Due date
@@ -506,6 +514,11 @@ en:
   setting_thumbnails_size: Thumbnails size (in pixels)
   setting_non_working_week_days: Non-working days
   setting_jsonp_enabled: Enable JSONP support
+  setting_personal_access_token_max_lifetime_days: Maximum personal access token lifetime (days)
+  setting_rest_api_cors_origins: Allowed origins for cross-origin API requests
+  setting_rest_api_disabled_endpoints: Available API endpoints
+  setting_rest_api_audit_level: API audit log
+  setting_rest_api_audit_retention_days: API audit log retention (days)
   setting_default_projects_tracker_ids: Default trackers for new projects
   setting_mail_handler_excluded_filenames: Exclude attachments by name
   setting_force_default_language_for_anonymous: Force default language for anonymous users
@@ -1030,6 +1043,38 @@ en:
   label_api_access_key: API access key
   label_missing_api_access_key: Missing an API access key
   label_api_access_key_created_on: "API access key created %{value} ago"
+  label_personal_access_token_plural: Personal access tokens
+  label_personal_access_token_new: New personal access token
+  label_personal_access_token_never_used: Never used
+  label_personal_access_token_scope: Scope
+  label_personal_access_token_scope_full: Full access
+  label_personal_access_token_scope_read_only: Read-only
+  label_personal_access_token_scope_custom: Custom
+  label_personal_access_token_scope_custom_count:
+    one: "Custom (1 permission)"
+    other: "Custom (%{count} permissions)"
+  label_personal_access_token: Personal access token
+  label_api_audit_event_plural: API audit log
+  label_api_audit_time: Time
+  label_api_audit_impersonator: Impersonated by
+  label_api_audit_credential: Credential
+  label_api_audit_method: Method
+  label_api_audit_endpoint: Endpoint
+  label_api_audit_path: Path
+  label_api_audit_status: Response
+  label_api_audit_ip: IP address
+  label_api_audit_credential_api_key: API key
+  label_api_audit_credential_personal_access_token: Personal access token
+  label_api_audit_credential_oauth: OAuth application
+  label_api_audit_credential_http_basic: HTTP Basic
+  label_api_audit_level_off: 'Off'
+  label_api_audit_level_writes: Writes and refused requests
+  label_api_audit_level_all: Every API request
+  label_expiration_x_days:
+    one: 1 day
+    other: "%{count} days"
+  label_expiration_none: No expiration
+  label_personal_access_token_expired: expired
   label_profile: Profile
   label_subtask: Subtask
   label_subtask_plural: Subtasks
@@ -1277,6 +1322,21 @@ en:
   text_users_bulk_destroy_confirm: 'To confirm, please enter "%{yes}" below.'
   text_workflow_edit: Select a role and a tracker to edit the workflow
   text_are_you_sure: Are you sure?
+  text_personal_access_token_no_expiration: A token with no expiration date stays valid until it is revoked.
+  text_personal_access_token_scope_full: The token can do everything its owner can do.
+  text_personal_access_token_scope_read_only: The token may read; every write is refused.
+  text_personal_access_token_scope_custom: The token is limited to the permissions selected below.
+  text_personal_access_token_scope_narrows_only: A scope can only narrow. A token never gains a permission its owner does not have, and a token restricted to a scope cannot change its owner's account.
+  text_personal_access_token_max_lifetime: Maximum number of days a personal access token may be valid for. 0 means no limit, and lets users create tokens that never expire.
+  text_personal_access_token_expiry_required:
+    one: "Your administrator requires tokens to expire within 1 day, so this token cannot be created without an expiry date."
+    other: "Your administrator requires tokens to expire within %{count} days, so this token cannot be created without an expiry date."
+  text_personal_access_tokens_api_disabled: The REST API is switched off, so none of the tokens below can authenticate a request. They still exist and will work again if it is switched back on, which is why they can still be revoked here.
+  text_rest_api_cors_origins: Comma-separated list of origins that may call the REST API from a browser, for example https://app.example.com, https://staging.example.com:8443. Scheme, host and port must match exactly. Leave empty to allow none. Requests are never authenticated by cookie across origins, so callers must send an API key or a personal access token.
+  text_rest_api_disabled_endpoints: Unchecked endpoints refuse REST API requests with 403, whichever credential is used. HTML pages are not affected, but a .json or .xml request is refused even when it comes from a logged-in browser session, and Atom feeds are a separate path this does not cover. Endpoints that are not listed here, including those added by plugins, stay available.
+  text_rest_api_audit_level: What the API audit log records. "Writes and refused requests" records every call that changes something plus every call refused with 401, 403 or 412, which is what an audit trail is for without recording the polling reads that are most of an instance's API traffic. "Every API request" is far larger and should be turned on deliberately.
+  text_rest_api_audit_retention_days: Number of days API audit events are kept. Events are removed by age, so flooding the log cannot push earlier events out of it. 0 keeps them forever. Removal happens when the rake task redmine:api_audit:prune runs; nothing schedules it for you.
+  text_api_audit_disabled: The API audit log is switched off, so nothing new is being recorded. Events recorded earlier are still shown.
   text_journal_changed: "%{label} changed from %{old} to %{new}"
   text_journal_changed_no_detail: "%{label} updated"
   text_journal_set_to: "%{label} set to %{value}"

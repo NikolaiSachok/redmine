@@ -23,6 +23,7 @@ class QueriesController < ApplicationController
 
   before_action :find_query, :only => [:edit, :update, :destroy]
   before_action :find_optional_project, :only => [:new, :create]
+  before_action :authorize_query_creation, :only => [:new, :create]
 
   accept_api_auth :index
 
@@ -184,6 +185,15 @@ class QueriesController < ApplicationController
     redirect_to users_path(options)
   end
 
+  # Every Query subclass needs its partner here: redirect_to_items builds this
+  # method name from the class name and sends it, and Query.get_subclass accepts
+  # any descendant, so a subclass without one answers 500 after having saved the
+  # row. Reading the resulting screen is still administrators only --
+  # ApiAuditEventsController requires it, as does ApiAuditQuery#visible?.
+  def redirect_to_api_audit_query(options)
+    redirect_to api_audit_events_path(options)
+  end
+
   def query_layout
     @query&.layout || 'base'
   end
@@ -196,5 +206,12 @@ class QueriesController < ApplicationController
   # for compatibility with previous behaviour
   def query_class
     Query.get_subclass(params[:type] || 'IssueQuery')
+  end
+
+  # Refuses building a kind of query this user could never use. Query itself
+  # answers true for any logged-in user, so this only bites subclasses that
+  # narrow it -- no existing query type is affected.
+  def authorize_query_creation
+    render_403 unless query_class.creatable_by?(User.current)
   end
 end

@@ -61,7 +61,27 @@ class ApplicationController < ActionController::Base
     end
   end
 
+  # set_cors_headers is prepended so that it runs before every other filter. A
+  # browser has to be able to read a 401 or a 403 from an allowed origin rather
+  # than an opaque network error, and a filter that renders halts the chain --
+  # so anything placed after user_setup misses the three refusals user_setup
+  # renders itself (a revoked OAuth token, HTTP Basic while 2FA is active, and
+  # an unchanged password), which are exactly the responses a browser client
+  # most needs to see.
+  #
+  # The trade is stated in set_cors_headers: Setting.check_cache runs in
+  # user_setup, so a prepended filter reads a settings cache one request stale
+  # unless it refreshes the cache itself, which it does.
+  prepend_before_action :set_cors_headers
   before_action :session_expiration, :user_setup, :check_if_login_required, :set_localization, :check_password_change, :check_twofa_activation
+  # Declared after the filters above so that it runs after user_setup (which is
+  # where a request learns whether an API credential authenticated it) and
+  # after check_if_login_required (so an anonymous caller on a login_required
+  # instance is refused before this gate can tell it anything). Declared here,
+  # in ApplicationController, so that it also runs before every filter a
+  # subclass declares and therefore before the action can have any effect --
+  # a disabled write must not write and then report failure.
+  before_action :check_api_endpoint_enabled
   after_action :record_project_usage
 
   rescue_from ::Unauthorized, :with => :deny_access
@@ -72,6 +92,26 @@ class ApplicationController < ActionController::Base
   helper Redmine::MenuManager::MenuHelper
 
   include Redmine::SudoMode::Controller
+
+  # The API audit log is written here rather than from an after_action, and
+  # the difference is the whole point of it.
+  #
+  # Rails skips after_action callbacks when an earlier filter renders and
+  # halts, and the responses this log most needs are exactly those: the three
+  # refusals rendered inside user_setup itself (a revoked OAuth token, HTTP
+  # Basic while 2FA is active, an unchanged password), require_login's 401 and
+  # check_api_endpoint_enabled's 403. An after_action would record every
+  # successful call and none of the authentication failures, which is the
+  # wrong half. An ensure around process_action cannot be skipped by any
+  # filter ordering, and still runs when the action raises.
+  #
+  # Redmine::ApiAudit.record swallows its own errors, so nothing here can
+  # change what the caller received.
+  def process_action(*)
+    super
+  ensure
+    Redmine::ApiAudit.record(self, $!)
+  end
 
   def session_expiration
     if session[:user_id] && Rails.application.config.redmine_verify_sessions != false
@@ -128,9 +168,18 @@ class ApplicationController < ActionController::Base
       end
     end
     if user.nil? && Setting.rest_api_enabled? && accept_api_auth?
+      # Remember that an API credential was *offered*, before knowing whether
+      # it works. A rejected credential leaves no authenticated user and no
+      # flag behind, and an authentication failure with nothing recorded is
+      # exactly the gap an audit log exists to close.
+      @api_credential_presented = true if api_credential_in_request?
       if (key = api_key_from_request)
         # Use API key
         user = User.find_by_api_key(key)
+        # or a personal access token, which is only ever read from the header.
+        # The API key is tried first so that a request carrying both an API key
+        # and a token header keeps authenticating exactly as it did before.
+        user ||= User.find_by_personal_access_token(personal_access_token_from_request)
       elsif access_token = Doorkeeper.authenticate(request)
         # Oauth
         if access_token.accessible?
@@ -150,6 +199,7 @@ class ApplicationController < ActionController::Base
           end
 
           user ||= User.find_by_api_key(username)
+          user ||= User.find_by_personal_access_token(username)
         end
         if user && user.must_change_password?
           render_error :message => 'You must change your password', :status => 403
@@ -160,12 +210,31 @@ class ApplicationController < ActionController::Base
       if user && user.admin? && (username = api_switch_user_from_request)
         su = User.find_by_login(username)
         if su && su.active?
+          # How the request authenticated is a property of the request, not of
+          # the user object. Impersonation loads a fresh record, so carry it
+          # over or the restrictions that depend on it silently stop applying.
+          su.authenticated_by_personal_access_token = user.authenticated_by_personal_access_token?
+          su.personal_access_token_scope = user.personal_access_token_scope
+          su.authenticating_personal_access_token_id = user.authenticating_personal_access_token_id
           logger.info("  User switched by: #{user.login} (id=#{user.id})") if logger
+          # Who actually acted, kept on the controller rather than on the user
+          # object that is about to be replaced. The audit log has to name both
+          # identities: the single most important row in it is the one an
+          # impersonator would want to read as somebody else.
+          @api_audit_impersonator = user
           user = su
         else
           render_error :message => 'Invalid X-Redmine-Switch-User header', :status => 412
         end
       end
+      # Remember that an API credential, rather than the session, is what
+      # authenticated this request. check_api_endpoint_enabled needs it:
+      # accept_api_auth? has no format check, so a credential in a header
+      # authenticates an accept_api_auth action even for an HTML request.
+      # Set after the impersonation branch so that it covers a switched user
+      # too, and on the controller rather than on the user object, because how
+      # a request authenticated is a property of the request.
+      @authenticated_by_api_credential = true if user
     end
     # store current ip address in user object ephemerally
     user.remote_ip = request.remote_ip if user
@@ -216,6 +285,55 @@ class ApplicationController < ActionController::Base
     return true if User.current.logged?
 
     require_login if Setting.login_required?
+  end
+
+  # Refuses a REST API request to an endpoint an administrator has disabled.
+  #
+  # What counts as "a REST API request" here is deliberately wider than
+  # api_request?. accept_api_auth? has no format check, so a credential in a
+  # header authenticates an accept_api_auth action even when the request asks
+  # for HTML: GET /my/account with X-Redmine-API-Key answers 200 where an
+  # anonymous browser is redirected to the login form. A gate written as "only
+  # when api_request?" would leave that path wide open. So the gate applies
+  # when the request asks for an API representation *or* when an API credential
+  # is what authenticated it.
+  #
+  # It deliberately does not apply to a human browsing the *HTML* interface
+  # with a session cookie: that request never enters the API branch of
+  # find_current_user, so @authenticated_by_api_credential is false and the
+  # page renders as before. It does apply to a session request that asks for
+  # the .json or .xml representation of a disabled endpoint, because
+  # api_request? alone satisfies the condition above -- the API representation
+  # is what an administrator switched off, however it authenticated.
+  #
+  # Atom is left alone entirely. A feed is a parallel read surface with its own
+  # credential (the atom key, resolved in an earlier branch of
+  # find_current_user, which never sets the flag) and its own links generated
+  # by the web interface. Gating only the feeds that happen to carry an API key
+  # would refuse one subscriber and serve the next from the same URL, so
+  # neither is gated -- and the consequence, that a disabled read endpoint is
+  # still readable through its feed, is stated as a limit in README.md.
+  #
+  # The refusal is a bare 403 with an empty body on *every* format. This is
+  # render_error minus its format.html branch, which renders a full error page
+  # naming the reason -- and would therefore tell an HTML-with-a-credential
+  # caller exactly what a .json caller is not told. What is left is
+  # byte-for-byte what Redmine already answers when the REST API is switched
+  # off entirely (require_login's format.api branch heads :forbidden unless
+  # rest_api_enabled? && accept_api_auth?), content type included, and the
+  # reason is written to the log for the administrator instead of to the
+  # caller.
+  def check_api_endpoint_enabled
+    return true unless accept_api_auth?
+    return true if params[:format] == 'atom' && accept_atom_auth?
+    return true unless api_request? || @authenticated_by_api_credential
+    return true unless Redmine::ApiEndpoints.disabled?(controller_path, action_name)
+
+    logger.info("  API endpoint #{controller_path}##{action_name} is disabled") if logger
+    respond_to do |format|
+      format.any {head :forbidden}
+    end
+    false
   end
 
   def check_password_change
@@ -724,12 +842,160 @@ class ApplicationController < ActionController::Base
     %w(xml json).include? params[:format]
   end
 
+  # Adds the CORS response headers when the request comes from an origin an
+  # administrator has allowed.
+  #
+  # Scoped to requests the *route* resolved to an API representation, which is
+  # deliberately narrower than api_request?. api_request? reads params[:format],
+  # and that can be supplied as a query parameter on any route at all, so the
+  # caller rather than the route table would decide which responses the policy
+  # covers: GET /attachments/download/1?format=json answers with the raw file
+  # bytes and would carry the headers, and so would /admin?format=json and
+  # /my/page?format=json. request.path_parameters[:format] is written by
+  # routing from the path extension and cannot come from the query string.
+  # api_request? itself is left alone -- it is pre-existing behaviour shared
+  # with the CSRF skip and the authentication path.
+  #
+  # The HTML interface is same-origin by construction and relies on the session
+  # cookie, so making it cross-origin readable would widen the surface far
+  # beyond the REST API this setting is about.
+  def set_cors_headers
+    return unless %w(xml json).include?(request.path_parameters[:format].to_s)
+
+    # This filter is prepended, so it runs before user_setup refreshes the
+    # settings cache. Refresh it here too, or removing an origin -- or turning
+    # the REST API off -- would only take effect on the request after next. The
+    # cost is one extra SELECT MAX(updated_on), on API requests only; making
+    # the off switch immediate is worth it.
+    Setting.check_cache
+    return unless Redmine::Cors.enabled?
+
+    # From here the response body and headers depend on the request's Origin,
+    # so a shared cache must key on it. This is set for every API response
+    # while the feature is on, including responses to origins that are not
+    # allowed and to requests with no Origin at all -- otherwise a cache could
+    # store a headerless response and replay it to an allowed origin, or the
+    # other way round.
+    response.headers['Vary'] = Redmine::Cors.vary_with_origin(response.headers['Vary'])
+
+    origin = request.headers['Origin'].to_s
+    return unless Redmine::Cors.allows?(origin)
+
+    # The allowed origin is echoed rather than a wildcard sent, so that only
+    # the listed origins are named. Access-Control-Allow-Credentials is never
+    # sent with it: pairing credentials with an echoed origin is what turns a
+    # CORS policy into a session hijack.
+    response.headers['Access-Control-Allow-Origin'] = origin
+    response.headers['Access-Control-Expose-Headers'] = Redmine::Cors::EXPOSED_HEADERS
+  end
+
   # Returns the API key present in the request
   def api_key_from_request
     if params[:key].present?
       params[:key].to_s
     elsif request.headers["X-Redmine-API-Key"].present?
       request.headers["X-Redmine-API-Key"].to_s
+    end
+  end
+
+  # Returns the personal access token present in the request header.
+  #
+  # Unlike the API key, a personal access token is never read from a request
+  # parameter: parameters are written to the application log, and to the access
+  # log of any proxy in front of it.
+  def personal_access_token_from_request
+    value = request.headers["X-Redmine-API-Key"].to_s
+    value if value.start_with?(PersonalAccessToken::PREFIX)
+  end
+
+  # True when the request carries something that the API branch of
+  # find_current_user would try to authenticate with, whether or not it works.
+  def api_credential_in_request?
+    api_key_from_request.present? ||
+      personal_access_token_from_request.present? ||
+      request.authorization.present? ||
+      oauth_token_in_params?
+  end
+
+  # Doorkeeper accepts a bearer token in a request parameter as well as in the
+  # Authorization header (from_access_token_param, from_bearer_param), so both
+  # count as a credential being offered.
+  def oauth_token_in_params?
+    params[:access_token].present? || params[:bearer_token].present?
+  end
+
+  # True when an API credential, rather than the session, authenticated this
+  # request. Read by check_api_endpoint_enabled and by the audit log.
+  def authenticated_by_api_credential?
+    !!@authenticated_by_api_credential
+  end
+
+  # True when an API credential was offered on a path that accepts one, even if
+  # it did not authenticate.
+  def api_credential_presented?
+    !!@api_credential_presented
+  end
+
+  # The user who actually held the credential when X-Redmine-Switch-User was
+  # used, or nil. Kept on the controller, not on the user object, because
+  # impersonation replaces the user object -- twice now a per-request property
+  # recorded there has been silently dropped by exactly that.
+  attr_reader :api_audit_impersonator
+
+  # Which personal access token this request was made with, by id, for the
+  # audit log -- including when the token was *refused*.
+  #
+  # An accepted token is stamped on the user object by
+  # PersonalAccessToken.authenticate. A refused one cannot be: authenticate
+  # returns nil before the stamps, and for an expired token, a revoked owner or
+  # a locked account there is no authenticated user to hang it on. The row would
+  # then say credential_type='personal_access_token' with no id -- naming the
+  # kind of credential that failed but not which one, which is the first thing
+  # an administrator needs when reading authentication failures.
+  #
+  # The lookup only runs when a token was offered and nothing authenticated, so
+  # the success path is unchanged. A value matching no row still yields nil,
+  # which is the one case where nil is the honest answer.
+  def api_audit_personal_access_token_id
+    user = User.current
+    return user.authenticating_personal_access_token_id if user&.authenticated_by_personal_access_token?
+
+    value = personal_access_token_from_request
+    return nil if value.blank?
+
+    PersonalAccessToken.find_by_value(value)&.id
+  end
+
+  # Names how the request authenticated, for the audit log. Never the value of
+  # anything.
+  #
+  # What actually authenticated wins where the request knows it: a personal
+  # access token offered as an HTTP Basic username is a token, not a password.
+  def api_audit_credential_type
+    user = User.current
+    return ApiAuditEvent::CREDENTIAL_PERSONAL_ACCESS_TOKEN if user&.authenticated_by_personal_access_token?
+    return ApiAuditEvent::CREDENTIAL_OAUTH if user&.authorized_by_oauth?
+
+    api_audit_offered_credential_type
+  end
+
+  # What the request offered, in the order find_current_user tries them. This
+  # is the answer whenever nothing authenticated, which is most of what an
+  # audit log is for.
+  def api_audit_offered_credential_type
+    if api_key_from_request.present?
+      # The API key and the token share the X-Redmine-API-Key header, and only
+      # the token carries the prefix. A token is never read from a parameter,
+      # so a key= parameter is an API key whatever it looks like.
+      if params[:key].blank? && personal_access_token_from_request.present?
+        ApiAuditEvent::CREDENTIAL_PERSONAL_ACCESS_TOKEN
+      else
+        ApiAuditEvent::CREDENTIAL_API_KEY
+      end
+    elsif /\ABearer /i.match?(request.authorization.to_s) || oauth_token_in_params?
+      ApiAuditEvent::CREDENTIAL_OAUTH
+    elsif /\ABasic /i.match?(request.authorization.to_s)
+      ApiAuditEvent::CREDENTIAL_HTTP_BASIC
     end
   end
 

@@ -1,0 +1,34 @@
+<div class="autoscroll">
+<table class="list odd-even api-audit-events">
+<thead>
+  <tr>
+    <% @query.inline_columns.each do |column| %>
+      <%= column_header(@query, column) %>
+    <% end %>
+  </tr>
+</thead>
+<tbody>
+<% grouped_query_results(events, @query) do |event, group_name, group_count, group_totals| -%>
+  <% if group_name %>
+    <% reset_cycle %>
+    <tr class="group open">
+      <td colspan="<%= @query.inline_columns.size %>">
+        <span class="expander" onclick="toggleRowGroup(this);"><%= sprite_icon("angle-down") %></span>
+        <span class="name"><%= group_name %></span>
+        <% if group_count %>
+          <span class="count"><%= group_count %></span>
+        <% end %>
+        <%= link_to_function("#{l(:button_collapse_all)}/#{l(:button_expand_all)}",
+                             "toggleAllRowGroups(this)", :class => 'toggle-all') %>
+      </td>
+    </tr>
+  <% end %>
+  <tr id="api-audit-event-<%= event.id %>" class="<%= cycle('odd', 'even') %>">
+    <% @query.inline_columns.each do |column| %>
+      <%= content_tag('td', column_content(column, event), :class => column.css_classes) %>
+    <% end %>
+  </tr>
+<% end -%>
+</tbody>
+</table>
+</div>

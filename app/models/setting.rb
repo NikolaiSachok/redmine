@@ -232,6 +232,45 @@ class Setting < ApplicationRecord
     s
   end
 
+  # Returns the list of disabled API endpoints from the admin form.
+  #
+  # The form posts one value per endpoint -- '1' when the endpoint is disabled,
+  # '0' when it is not -- because what is *stored* has to be the disabled list:
+  # an endpoint missing from the setting must be enabled, or a plugin's
+  # endpoint, or one added by a later Redmine version, would stop working the
+  # moment an administrator saved this screen. The checkbox itself still reads
+  # as "enabled", like the roles permission screen.
+  #
+  # The result is intersected with the endpoints enumerated from the code, so
+  # nothing a form can post ever becomes a stored value that names no real
+  # endpoint. Anything already stored that the enumeration cannot see right now
+  # is carried over instead of being dropped -- see below.
+  def self.rest_api_disabled_endpoints_from_params(params)
+    # ActionController::Parameters is not a Hash. The one caller unwraps it
+    # today, but a guard that silently answers [] would re-enable every
+    # endpoint the first time that stopped being true.
+    params = params.to_unsafe_h if params.respond_to?(:to_unsafe_h)
+    return [] unless params.is_a?(Hash)
+
+    posted = params.select {|_endpoint, value| value.to_s == '1'}.keys.map(&:to_s)
+    known = Redmine::ApiEndpoints.all
+    # A stored endpoint the enumeration does not list -- a plugin whose
+    # controller failed to load, say -- has no checkbox on the screen, so the
+    # form cannot post it back. Intersecting with the enumeration alone would
+    # therefore silently *re-enable* it, which is the wrong direction for a
+    # switch whose whole job is to take API surface away. Keep it, and say so
+    # in the log, because an administrator saving a screen that does not show
+    # every stored value deserves a record of what was kept.
+    carried = Redmine::ApiEndpoints.disabled - known
+    if carried.any? && Rails.logger
+      Rails.logger.warn(
+        "Keeping #{carried.size} disabled API endpoint(s) that are not in the " \
+        "current enumeration: #{carried.join(', ')}"
+      )
+    end
+    ((known & posted) + carried).uniq
+  end
+
   def self.twofa_from_params(params)
     # unpair all current 2FA pairings when switching off 2FA
     Redmine::Twofa.unpair_all! if params == '0' && self.twofa?

@@ -97,6 +97,16 @@ Rails.application.routes.draw do
   get 'my/api_key', :to => 'my#show_api_key', :as => 'my_api_key'
   post 'my/api_key', :to => 'my#reset_api_key'
   post 'my/atom_key', :to => 'my#reset_atom_key', :as => 'my_atom_key'
+  get 'my/personal_access_tokens', :to => 'my#personal_access_tokens', :as => 'my_personal_access_tokens'
+  get 'my/personal_access_tokens/new', :to => 'my#new_personal_access_token', :as => 'new_my_personal_access_token'
+  post 'my/personal_access_tokens', :to => 'my#create_personal_access_token'
+  delete 'my/personal_access_tokens/:id', :to => 'my#revoke_personal_access_token', :as => 'my_personal_access_token'
+
+  resources :personal_access_tokens, :only => [:index, :destroy]
+  # The audit log is read as a page or exported as CSV. There is deliberately
+  # no json/xml representation: a REST endpoint for the log is self-referential
+  # and is deferred.
+  resources :api_audit_events, :only => [:index], :constraints => {:format => /html|csv/}
   match 'my/password', :controller => 'my', :action => 'password', :via => [:get, :post]
   match 'my/add_block', :controller => 'my', :action => 'add_block', :via => :post
   match 'my/remove_block', :controller => 'my', :action => 'remove_block', :via => :post
@@ -434,4 +444,14 @@ Rails.application.routes.draw do
     puts "An error occurred while loading the routes definition of #{plugin_name} plugin (#{plugin_routes_path}): #{e.message}."
     exit 1
   end
+
+  # CORS preflight. Nothing in Redmine answers OPTIONS, so this catch-all can
+  # only add behaviour, never shadow an existing route. It is constrained to
+  # the API formats so that OPTIONS on an HTML path still 404s as before.
+  #
+  # Drawn last, after the plugin routes, and that position is load-bearing: a
+  # glob route matches every path, so anything defined below it is unreachable
+  # for OPTIONS. A plugin that answers OPTIONS on a .json or .xml path must
+  # still win.
+  match '*resource', :to => 'cors#preflight', :via => :options, :format => true, :constraints => {:format => /json|xml/}
 end

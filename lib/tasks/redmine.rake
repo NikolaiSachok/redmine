@@ -37,6 +37,14 @@ namespace :redmine do
     desc 'Removes expired tokens.'
     task :prune => :environment do
       Token.destroy_expired
+      PersonalAccessToken.destroy_expired
+    end
+  end
+
+  namespace :api_audit do
+    desc 'Removes API audit events older than the configured retention period.'
+    task :prune => :environment do
+      ApiAuditEvent.prune
     end
   end
 

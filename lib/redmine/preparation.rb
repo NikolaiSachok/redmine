@@ -285,6 +285,26 @@ module Redmine
                   :caption => :'doorkeeper.layouts.admin.nav.applications',
                   :icon => 'apps',
                   :html => {:class => 'icon icon-applications'}
+        # Not gated on rest_api_enabled?, unlike the OAuth applications entry
+        # above it, and the asymmetry is deliberate. An application is useless
+        # once the API is off, but existing tokens are not gone: they survive
+        # the switch and re-arm the moment it goes back on. Gating this entry
+        # meant that switching the API off -- the first thing anyone does in an
+        # incident -- removed the only route to the screen that revokes them.
+        # The self-service screens are gated, because minting a token that
+        # cannot authenticate anything helps nobody; revoking one always can.
+        menu.push :personal_access_tokens,
+                  {:controller => 'personal_access_tokens', :action => 'index'},
+                  :caption => :label_personal_access_token_plural,
+                  :icon => 'key',
+                  :html => {:class => 'icon icon-key'}
+        # Not gated either, for the same shape of reason: switching the API off
+        # is exactly when somebody wants to read what it did while it was on.
+        menu.push :api_audit_events,
+                  {:controller => 'api_audit_events', :action => 'index'},
+                  :caption => :label_api_audit_event_plural,
+                  :icon => 'list',
+                  :html => {:class => 'icon icon-list'}
         menu.push :plugins, {:controller => 'admin', :action => 'plugins'},
                   :last => true,
                   :icon => 'plugins',

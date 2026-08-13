@@ -4,6 +4,55 @@
 <p><%= setting_check_box :rest_api_enabled %></p>
 
 <p><%= setting_check_box :jsonp_enabled %></p>
+
+<p>
+  <%= setting_text_field :personal_access_token_max_lifetime_days, :size => 6 %>
+  <em class="info"><%= l(:text_personal_access_token_max_lifetime) %></em>
+</p>
+
+<p>
+  <%= setting_text_field :rest_api_cors_origins, :size => 60 %>
+  <em class="info"><%= l(:text_rest_api_cors_origins) %></em>
+</p>
+
+<p>
+  <%= setting_select :rest_api_audit_level,
+        ApiAuditEvent::LEVELS.map {|level| [l("label_api_audit_level_#{level}"), level]} %>
+  <em class="info"><%= l(:text_rest_api_audit_level) %></em>
+</p>
+
+<p>
+  <%= setting_text_field :rest_api_audit_retention_days, :size => 6 %>
+  <em class="info"><%= l(:text_rest_api_audit_retention_days) %></em>
+</p>
+</div>
+
+<h3><%= l(:setting_rest_api_disabled_endpoints) %></h3>
+<p><em class="info"><%= l(:text_rest_api_disabled_endpoints) %></em></p>
+
+<div class="box tabular" id="rest-api-endpoints">
+<% Redmine::ApiEndpoints.grouped.each do |controller, actions| %>
+    <% group_id = "api_endpoints_#{controller.tr('/', '_')}" %>
+    <fieldset id="<%= group_id %>"><legend><%= toggle_checkboxes_link("##{group_id} input[type=checkbox]") %><%= l_or_humanize(controller, :prefix => 'label_api_endpoints_') %></legend>
+    <% actions.each do |action| %>
+        <% endpoint = Redmine::ApiEndpoints.id_for(controller, action) %>
+        <label class="floating">
+        <%# The checkbox reads as "enabled", like the roles permission screen,
+            but what is stored is the disabled list -- an endpoint absent from
+            the setting has to be enabled, or saving this screen would disable
+            every endpoint it does not know about. So the hidden companion
+            carries '1' (disabled) and the checkbox '0' (not disabled), and
+            Setting.rest_api_disabled_endpoints_from_params keeps the '1's. %>
+        <%= hidden_field_tag "settings[rest_api_disabled_endpoints][#{endpoint}]", '1', :id => nil %>
+        <%= check_box_tag "settings[rest_api_disabled_endpoints][#{endpoint}]", '0',
+              Redmine::ApiEndpoints.enabled?(controller, action),
+              :id => "#{group_id}_#{action}" %>
+        <%= action %>
+        </label>
+    <% end %>
+    </fieldset>
+<% end %>
+<br /><%= check_all_links 'rest-api-endpoints' %>
 </div>
 
 <%= submit_tag l(:button_save) %>

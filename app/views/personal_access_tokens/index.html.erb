@@ -1,0 +1,44 @@
+<%= title l(:label_personal_access_token_plural) %>
+
+<%# This screen is deliberately reachable while the REST API is off, because
+    that is when an administrator most needs to revoke a token. Saying so
+    matters: the tokens listed below cannot authenticate anything in that state,
+    and they will work again the moment the setting goes back on. Same shape as
+    the audit log's warning, which faces the same situation. %>
+<% unless Setting.rest_api_enabled? %>
+  <p class="warning"><%= l(:text_personal_access_tokens_api_disabled) %></p>
+<% end %>
+
+<% if @tokens.any? %>
+<div class="autoscroll">
+<table class="list">
+  <thead>
+    <tr>
+      <th><%= l(:label_user) %></th>
+      <th><%= l(:field_name) %></th>
+      <th><%= l(:label_personal_access_token_scope) %></th>
+      <th><%= l(:field_created_on) %></th>
+      <th><%= l(:field_expires_on) %></th>
+      <th><%= l(:field_last_used_on) %></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    <% @tokens.each do |token| %>
+    <tr id="personal-access-token-<%= token.id %>" class="<%= cycle('odd', 'even') %> <%= personal_access_token_row_class(token) %>">
+      <td class="user"><%= link_to_user token.user %></td>
+      <td class="name"><span><%= token.name %></span></td>
+      <td class="scope" title="<%= personal_access_token_scope_title(token) %>"><%= personal_access_token_scope_label(token) %></td>
+      <td><%= format_time(token.created_at) %></td>
+      <td class="expires-on"><%= personal_access_token_expiry_label(token) %></td>
+      <td><%= token.last_used_on ? format_time(token.last_used_on) : l(:label_personal_access_token_never_used) %></td>
+      <td class="buttons"><%= delete_link personal_access_token_path(token) %></td>
+    </tr>
+    <% end %>
+  </tbody>
+</table>
+</div>
+<span class="pagination"><%= pagination_links_full @token_pages, @token_count %></span>
+<% else %>
+<p class="nodata"><%= l(:label_no_data) %></p>
+<% end %>

@@ -22,6 +22,11 @@ require_relative '../test_helper'
 class MyControllerTest < Redmine::ControllerTest
   def setup
     @request.session[:user_id] = 2
+    # rest_api_enabled defaults to 0, and the personal access token screens are
+    # gated on it (UI-001) exactly as the API key block beside them already was.
+    # The token tests below therefore have to declare the setting they depend
+    # on; the two that assert the gate itself override this with with_settings.
+    Setting.rest_api_enabled = '1'
   end
 
   def test_index
@@ -831,5 +836,467 @@ class MyControllerTest < Redmine::ControllerTest
     assert User.find(2).api_token
     assert_match /reset/, flash[:notice]
     assert_redirected_to '/my/account'
+  end
+
+  def test_personal_access_tokens_without_any_token
+    get :personal_access_tokens
+
+    assert_response :success
+    assert_select 'p.nodata'
+    # the list page offers creation but does not itself create
+    assert_select 'div.contextual a.icon-add[href=?]', '/my/personal_access_tokens/new'
+    assert_select 'input#personal_access_token_name', 0
+  end
+
+  def test_account_sidebar_should_link_to_personal_access_tokens
+    with_settings :rest_api_enabled => '1' do
+      get :account
+
+      assert_response :success
+      assert_select '#sidebar a[href=?]', '/my/personal_access_tokens'
+      # the API key block the new link sits beside is asserted by a system test
+      # that cannot run in this container; pin its markup here too
+      assert_select '#sidebar #api-access-key'
+      assert_select '#sidebar .api-key-actions .copy-api-key-link'
+    end
+  end
+
+  # UI-001. The sidebar link was already hidden when the API is off; the screens
+  # behind it were not, so a user could still reach them by URL and mint a token
+  # that cannot authenticate anything -- find_current_user never enters the API
+  # branch while the setting is off. Hiding a link is not authorization, so all
+  # four actions are asserted, not just the one the link pointed at.
+  def test_ui_001_the_token_screens_should_be_refused_when_the_rest_api_is_off
+    token = PersonalAccessToken.create!(:user => User.find(2), :name => 'existing')
+
+    with_settings :rest_api_enabled => '0' do
+      get :personal_access_tokens
+      assert_response :forbidden
+
+      get :new_personal_access_token
+      assert_response :forbidden
+
+      assert_no_difference 'PersonalAccessToken.count' do
+        post :create_personal_access_token,
+             :params => {:personal_access_token => {:name => 'api-off-token'}}
+      end
+      assert_response :forbidden
+
+      assert_no_difference 'PersonalAccessToken.count' do
+        delete :revoke_personal_access_token, :params => {:id => token.id}
+      end
+      assert_response :forbidden
+    end
+  end
+
+  # The complement, so the gate cannot be satisfied by refusing everything.
+  def test_ui_001_the_token_screens_should_work_when_the_rest_api_is_on
+    with_settings :rest_api_enabled => '1' do
+      get :personal_access_tokens
+      assert_response :success
+
+      get :new_personal_access_token
+      assert_response :success
+
+      assert_difference 'PersonalAccessToken.count', 1 do
+        post :create_personal_access_token,
+             :params => {:personal_access_token => {:name => 'api-on-token'}}
+      end
+      assert_response :success
+    end
+  end
+
+  # UI-003. The error named a control that was not on screen: the permission
+  # checkboxes are in a collapsed fieldset, and nothing expanded it when the
+  # record came back rejected for having none. Every user choosing a custom
+  # scope met this on their first attempt.
+  def test_ui_003_a_rejected_custom_scope_should_show_the_permissions_it_is_asking_for
+    assert_no_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token,
+           :params => {:personal_access_token => {:name => 'custom', :scope_preset => 'custom'}}
+    end
+
+    assert_response :success
+    assert_select '#errorExplanation'
+    assert_select 'fieldset#personal-access-token-permissions' do
+      assert_select 'legend.icon-expanded'
+    end
+    assert_select 'fieldset#personal-access-token-permissions.collapsed', 0
+    assert_select 'fieldset#personal-access-token-permissions div.hidden', 0
+  end
+
+  # The complement: the fieldset stays out of the way on a first visit, which is
+  # the reason it was collapsed in the first place.
+  def test_ui_003_the_permissions_fieldset_should_stay_collapsed_on_a_fresh_form
+    get :new_personal_access_token
+
+    assert_response :success
+    assert_select 'fieldset#personal-access-token-permissions.collapsed'
+  end
+
+  # UI-009. The fix for UI-003 was server-side only: the fieldset opened after a
+  # rejected submit, and selecting Custom on a fresh form still revealed
+  # nothing, because nothing was bound to the radios.
+  #
+  # There is no browser in this container, so this asserts the wiring exists and
+  # points at the right elements -- that the handler *works* is not verified
+  # here, and cannot be until test/system/ can run.
+  def test_ui_009_the_scope_radios_should_be_wired_to_the_permissions_fieldset
+    get :new_personal_access_token
+
+    assert_response :success
+    script = css_select('script').map(&:text).join("\n")
+    assert_include 'personal_access_token[scope_preset]', script
+    assert_include 'personal-access-token-permissions', script
+    assert_include "'custom'", script,
+                   'the handler must compare against the custom preset value the model defines'
+    # the elements the handler addresses have to be the ones actually rendered
+    assert_select 'fieldset#personal-access-token-permissions > legend'
+    assert_select 'input[name=?][value=?]', 'personal_access_token[scope_preset]', 'custom'
+  end
+
+  # UI-012. A one or two day ceiling is a legitimate configuration --
+  # offered_lifetimes_in_days returns [max] when max < 30 -- and rendered
+  # "1 days" in two places, both strings new on this branch.
+  def test_ui_012_a_one_day_ceiling_should_not_render_as_one_days
+    with_settings :personal_access_token_max_lifetime_days => '1' do
+      get :new_personal_access_token
+
+      assert_response :success
+      assert_not_include '1 days', response.body
+      assert_select 'option', :text => '1 day'
+      assert_select 'em.info', :text => /within 1 day,/
+    end
+  end
+
+  # UI-013. The model keeps expired tokens so their owner can see why one
+  # stopped working; the screen printed the date and never the consequence.
+  def test_ui_013_an_expired_token_should_be_marked_as_expired
+    live = PersonalAccessToken.create!(:user => User.find(2), :name => 'live')
+    expired = PersonalAccessToken.create!(:user => User.find(2), :name => 'stale')
+    expired.update_column(:expires_on, Date.today - 1)
+
+    get :personal_access_tokens
+
+    assert_response :success
+    assert_select "tr#personal-access-token-#{expired.id}.expired td.expires-on span.expired",
+                  :text => /expired/
+    assert_select "tr#personal-access-token-#{live.id}.expired", 0
+  end
+
+  # UI-006. The hint under Expires reused the administrator's settings string,
+  # which describes a control the user cannot see and offers an option this
+  # select does not contain.
+  def test_ui_006_the_expiry_hint_should_be_written_for_the_user_not_the_administrator
+    with_settings :personal_access_token_max_lifetime_days => '90' do
+      get :new_personal_access_token
+
+      assert_response :success
+      assert_select 'em.info', :text => /requires tokens to expire within 90 days/
+      assert_select 'em.info', {:text => /0 means no limit/, :count => 0}
+    end
+  end
+
+  # UI-008. The list can hold several tokens, so a bare confirmation leaves the
+  # user unsure which one went. Names have no format validation and the flash is
+  # rendered html_safe, so the escaping half is pinned with the naming half --
+  # the administration screen walked into exactly this trap.
+  def test_ui_008_the_revoke_flash_should_name_the_token_and_escape_it
+    token = PersonalAccessToken.create!(:user => User.find(2), :name => '<b>pwn</b>')
+
+    delete :revoke_personal_access_token, :params => {:id => token.id}
+
+    assert_redirected_to '/my/personal_access_tokens'
+    assert_include '&lt;b&gt;pwn&lt;/b&gt;', flash[:notice]
+    assert_not_include '<b>pwn</b>', flash[:notice]
+  end
+
+  def test_new_personal_access_token_should_default_to_thirty_days
+    get :new_personal_access_token
+
+    assert_response :success
+    assert_select 'input#personal_access_token_name'
+    assert_select 'select#personal_access_token_expires_in_days' do
+      assert_select 'option[selected="selected"][value=?]', '30'
+    end
+  end
+
+  def test_personal_access_tokens_should_list_the_users_tokens_only
+    PersonalAccessToken.create!(:user => User.find(2), :name => 'mine')
+    PersonalAccessToken.create!(:user => User.find(3), :name => 'someone else')
+    get :personal_access_tokens
+
+    assert_response :success
+    assert_select 'table.list td.name', :text => 'mine'
+    assert_select 'table.list td.name', :text => 'someone else', :count => 0
+  end
+
+  def test_create_personal_access_token
+    assert_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => 'CI', :expires_in_days => '30'}
+      }
+    end
+    assert_response :success
+
+    token = PersonalAccessToken.order(:id => :desc).first
+    assert_equal User.find(2), token.user
+    assert_equal User.current.today + 30, token.expires_on
+    # the value is shown exactly once, on a page of its own that names the
+    # token it belongs to, so it cannot be confused with another one
+    assert_select 'h2', :text => /CI/
+    assert_select 'pre#personal-access-token-value', :text => /\Armpat_[0-9a-f]{40}\z/
+    assert_select 'div[data-controller=?] a.copy-api-key-link', 'api-key-copy'
+  end
+
+  def test_create_personal_access_token_should_not_show_the_value_again
+    post :create_personal_access_token, :params => {
+      :personal_access_token => {:name => 'CI', :expires_in_days => '30'}
+    }
+    assert_select 'pre#personal-access-token-value'
+
+    get :personal_access_tokens
+    assert_response :success
+    assert_select 'pre#personal-access-token-value', 0
+    assert_select 'table.list td.name', :text => 'CI'
+  end
+
+  def test_create_personal_access_token_without_expiry
+    post :create_personal_access_token, :params => {
+      :personal_access_token => {:name => 'CI', :expires_in_days => ''}
+    }
+    assert_response :success
+    assert_nil PersonalAccessToken.order(:id => :desc).first.expires_on
+  end
+
+  def test_create_personal_access_token_without_name_should_fail
+    assert_no_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => '', :expires_in_days => '30'}
+      }
+    end
+    assert_response :success
+    assert_select '#errorExplanation'
+    assert_select 'pre#personal-access-token-value', 0
+    # the form is redisplayed rather than the list
+    assert_select 'select#personal_access_token_expires_in_days'
+  end
+
+  def test_revoke_personal_access_token
+    token = PersonalAccessToken.create!(:user => User.find(2), :name => 'CI')
+
+    assert_difference 'PersonalAccessToken.count', -1 do
+      delete :revoke_personal_access_token, :params => {:id => token.id}
+    end
+    assert_redirected_to '/my/personal_access_tokens'
+  end
+
+  def test_create_personal_access_token_losing_a_name_race_should_redisplay_the_form
+    # two submissions of the same name can both pass the uniqueness validation
+    # and race to the unique index behind it
+    PersonalAccessToken.any_instance.stubs(:save).raises(
+      ActiveRecord::RecordNotUnique.new('duplicate key')
+    )
+
+    post :create_personal_access_token, :params => {
+      :personal_access_token => {:name => 'CI', :expires_in_days => '30'}
+    }
+    assert_response :success
+    assert_select '#errorExplanation'
+    assert_select 'pre#personal-access-token-value', 0
+  end
+
+  def test_create_personal_access_token_should_require_sudo_mode
+    Redmine::SudoMode.stubs(:enabled?).returns(true)
+
+    assert_no_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => 'CI', :expires_in_days => '30'}
+      }
+    end
+    assert_response :success
+    assert_select 'input#sudo_password'
+  end
+
+  def test_revoke_personal_access_token_should_require_sudo_mode
+    token = PersonalAccessToken.create!(:user => User.find(2), :name => 'CI')
+    Redmine::SudoMode.stubs(:enabled?).returns(true)
+
+    assert_no_difference 'PersonalAccessToken.count' do
+      delete :revoke_personal_access_token, :params => {:id => token.id}
+    end
+    assert_response :success
+    assert_select 'input#sudo_password'
+  end
+
+  def test_new_personal_access_token_should_default_to_the_read_only_preset
+    get :new_personal_access_token
+
+    assert_response :success
+    assert_select 'input#personal_access_token_scope_preset_read_only[checked=?]', 'checked'
+    assert_select 'input#personal_access_token_scope_preset_full'
+    assert_select 'input#personal_access_token_scope_preset_custom'
+    # the advanced picker, one checkbox per permission
+    assert_select 'input#personal_access_token_permissions_view_issues'
+    assert_select 'input#personal_access_token_permissions_edit_issues'
+  end
+
+  def test_new_personal_access_token_should_not_offer_the_admin_scope_to_an_ordinary_user
+    get :new_personal_access_token
+    assert_response :success
+    assert_select 'input#personal_access_token_permissions_admin', 0
+  end
+
+  def test_new_personal_access_token_should_offer_the_admin_scope_to_an_administrator
+    @request.session[:user_id] = 1
+    get :new_personal_access_token
+    assert_response :success
+    assert_select 'input#personal_access_token_permissions_admin'
+  end
+
+  def test_create_personal_access_token_with_the_read_only_preset
+    assert_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => 'CI', :expires_in_days => '30',
+                                   :scope_preset => 'read_only',
+                                   :permissions => ['', 'admin']}
+      }
+    end
+    assert_response :success
+
+    token = PersonalAccessToken.order(:id => :desc).first
+    # the preset wins over whatever the picker posted
+    assert_equal PersonalAccessToken.read_only_permissions.sort, token.permissions.sort
+    assert_not_includes token.permissions, :admin
+  end
+
+  def test_create_personal_access_token_with_a_custom_scope
+    assert_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => 'CI', :expires_in_days => '30',
+                                   :scope_preset => 'custom',
+                                   :permissions => ['', 'view_issues', 'log_time']}
+      }
+    end
+    assert_response :success
+    assert_equal [:view_issues, :log_time],
+                 PersonalAccessToken.order(:id => :desc).first.permissions
+  end
+
+  def test_create_personal_access_token_with_the_full_preset
+    post :create_personal_access_token, :params => {
+      :personal_access_token => {:name => 'CI', :expires_in_days => '30',
+                                 :scope_preset => 'full'}
+    }
+    assert_response :success
+    assert_nil PersonalAccessToken.order(:id => :desc).first.permissions
+  end
+
+  def test_create_personal_access_token_with_an_unknown_permission_should_redisplay_the_form
+    assert_no_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => 'CI', :expires_in_days => '30',
+                                   :scope_preset => 'custom',
+                                   :permissions => ['view_issues', 'not_a_permission']}
+      }
+    end
+    assert_response :success
+    assert_select '#errorExplanation'
+  end
+
+  def test_create_personal_access_token_with_an_empty_custom_scope_should_redisplay_the_form
+    assert_no_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => 'CI', :expires_in_days => '30',
+                                   :scope_preset => 'custom', :permissions => ['']}
+      }
+    end
+    assert_response :success
+    assert_select '#errorExplanation'
+
+    # the same submission without even the form's empty hidden field: a custom
+    # scope naming nothing must be refused, not resolve to nil, which means
+    # unrestricted
+    assert_no_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => 'CI', :expires_in_days => '30',
+                                   :scope_preset => 'custom'}
+      }
+    end
+    assert_response :success
+    assert_select '#errorExplanation'
+  end
+
+  # A create request that says nothing about scope must not be read as asking
+  # for the widest credential there is. It gets what the form pre-selects, so a
+  # submission with the radio stripped behaves exactly like the untouched form.
+  def test_create_personal_access_token_without_a_preset_should_not_grant_full_access
+    assert_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => 'CI', :expires_in_days => '30'}
+      }
+    end
+    assert_response :success
+
+    token = PersonalAccessToken.order(:id => :desc).first
+    assert_not_nil token.permissions, 'a request that named no scope got full access'
+    assert_equal PersonalAccessToken.read_only_permissions.sort, token.permissions.sort
+  end
+
+  # The same, with a picker selection but no preset: the posted list must not
+  # become the scope by falling through the resolver's case.
+  def test_create_personal_access_token_without_a_preset_should_ignore_a_posted_permission_list
+    post :create_personal_access_token, :params => {
+      :personal_access_token => {:name => 'CI', :expires_in_days => '30',
+                                 :permissions => ['admin']}
+    }
+    assert_response :success
+
+    token = PersonalAccessToken.order(:id => :desc).first
+    assert_not_includes token.permissions, :admin
+    assert_equal PersonalAccessToken.read_only_permissions.sort, token.permissions.sort
+  end
+
+  # An unrecognised preset used to fall through the resolver's case and be
+  # treated as "custom", which made SCOPE_PRESETS decorative.
+  def test_create_personal_access_token_with_an_unknown_preset_should_redisplay_the_form
+    assert_no_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => 'CI', :expires_in_days => '30',
+                                   :scope_preset => 'bogus',
+                                   :permissions => ['admin']}
+      }
+    end
+    assert_response :success
+    assert_select '#errorExplanation'
+    assert_select 'pre#personal-access-token-value', 0
+  end
+
+  def test_personal_access_tokens_should_show_the_scope_of_each_token
+    PersonalAccessToken.create!(:user => User.find(2), :name => 'unscoped')
+    PersonalAccessToken.create!(:user => User.find(2), :name => 'read only',
+                                :scope_preset => 'read_only')
+    PersonalAccessToken.create!(:user => User.find(2), :name => 'custom',
+                                :scope_preset => 'custom',
+                                :permissions => ['view_issues', 'edit_issues'])
+    PersonalAccessToken.create!(:user => User.find(2), :name => 'one permission',
+                                :scope_preset => 'custom',
+                                :permissions => ['add_issues'])
+    get :personal_access_tokens
+
+    assert_response :success
+    assert_select 'table.list td.scope', :text => 'Full access'
+    assert_select 'table.list td.scope', :text => 'Read-only'
+    assert_select 'table.list td.scope', :text => 'Custom (2 permissions)'
+    assert_select 'table.list td.scope', :text => 'Custom (1 permission)'
+  end
+
+  def test_revoke_personal_access_token_of_another_user_should_respond_404
+    token = PersonalAccessToken.create!(:user => User.find(3), :name => 'CI')
+
+    assert_no_difference 'PersonalAccessToken.count' do
+      delete :revoke_personal_access_token, :params => {:id => token.id}
+    end
+    assert_response :not_found
   end
 end

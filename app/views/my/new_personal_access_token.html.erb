@@ -1,0 +1,123 @@
+<%= title [l(:label_my_account), my_account_path],
+           [l(:label_personal_access_token_plural), my_personal_access_tokens_path],
+           l(:label_personal_access_token_new) %>
+
+<%= error_messages_for @personal_access_token %>
+
+<%= labelled_form_for @personal_access_token, :url => my_personal_access_tokens_path, :html => {:method => :post} do |f| %>
+<div class="box tabular">
+  <p><%= f.text_field :name, :size => 40, :required => true %></p>
+  <p>
+    <%= f.select :expires_in_days,
+                 PersonalAccessToken.offered_lifetimes_in_days.collect {|days| [l(:label_expiration_x_days, :count => days), days]} +
+                   (PersonalAccessToken.expiry_required? ? [] : [[l(:label_expiration_none), '']]),
+                 :label => :field_expires_on %>
+    <em class="info">
+      <%# The user's string, not the administrator's. This used to reuse
+          text_personal_access_token_max_lifetime, which is written for the
+          settings screen and describes a control this user cannot see and an
+          option this select does not offer. %>
+      <%= PersonalAccessToken.expiry_required? ?
+            l(:text_personal_access_token_expiry_required, :count => PersonalAccessToken.max_lifetime_in_days) :
+            l(:text_personal_access_token_no_expiration) %>
+    </em>
+  </p>
+</div>
+
+<fieldset class="box" id="personal-access-token-scope">
+  <legend><%= l(:label_personal_access_token_scope) %></legend>
+  <p>
+    <label class="block">
+      <%= f.radio_button :scope_preset, PersonalAccessToken::SCOPE_PRESET_READ_ONLY %>
+      <%= l(:label_personal_access_token_scope_read_only) %>
+      <em class="info"><%= l(:text_personal_access_token_scope_read_only) %></em>
+    </label>
+    <label class="block">
+      <%= f.radio_button :scope_preset, PersonalAccessToken::SCOPE_PRESET_FULL %>
+      <%= l(:label_personal_access_token_scope_full) %>
+      <em class="info"><%= l(:text_personal_access_token_scope_full) %></em>
+    </label>
+    <label class="block">
+      <%= f.radio_button :scope_preset, PersonalAccessToken::SCOPE_PRESET_CUSTOM %>
+      <%= l(:label_personal_access_token_scope_custom) %>
+      <em class="info"><%= l(:text_personal_access_token_scope_custom) %></em>
+    </label>
+  </p>
+  <em class="info"><%= l(:text_personal_access_token_scope_narrows_only) %></em>
+
+  <%# Open when the permissions are what the form is asking about: the custom
+      preset is selected, or the record came back rejected for having none.
+      Otherwise "Permissions cannot be blank" names a control that is not on
+      screen, which is the first thing anyone choosing a custom scope met.
+      Same shape as queries/_query_form.html.erb, which does this for filters. %>
+  <% permissions_expanded = @personal_access_token.errors[:permissions].any? ||
+                            @personal_access_token.scope_preset == PersonalAccessToken::SCOPE_PRESET_CUSTOM %>
+  <fieldset class="collapsible <%= 'collapsed' unless permissions_expanded %>" id="personal-access-token-permissions">
+    <legend onclick="toggleFieldset(this);" class="icon icon-<%= permissions_expanded ? 'expanded' : 'collapsed' %>">
+      <%= sprite_icon(permissions_expanded ? "angle-down" : "angle-right", rtl: !permissions_expanded) %>
+      <%= l(:label_permissions) %>
+    </legend>
+    <div class="<%= 'hidden' unless permissions_expanded %>">
+      <% if User.current.admin? %>
+      <fieldset id="scope_module_administration">
+        <legend><%= l(:label_administration) %></legend>
+        <label class="floating">
+          <%= check_box_tag 'personal_access_token[permissions][]', 'admin',
+                            @personal_access_token.permissions.to_a.include?(:admin),
+                            :id => 'personal_access_token_permissions_admin' %>
+          <%= l(:label_administration) %>
+        </label>
+      </fieldset>
+      <% end %>
+      <% PersonalAccessToken.selectable_permissions.group_by {|p| p.project_module.to_s}.sort.each do |mod, permissions| %>
+      <% module_name = mod.blank? ? 'module_project' : "module_#{mod}" %>
+      <fieldset id="scope_<%= module_name %>">
+        <legend><%= toggle_checkboxes_link("#scope_#{module_name}\ input") %><%= mod.blank? ? l(:label_project) : l_or_humanize(mod, :prefix => 'project_module_') %></legend>
+        <% permissions.each do |permission| %>
+        <label class="floating">
+          <%= check_box_tag 'personal_access_token[permissions][]', permission.name,
+                            @personal_access_token.permissions.to_a.include?(permission.name),
+                            :id => "personal_access_token_permissions_#{permission.name}" %>
+          <%= l_or_humanize(permission.name, :prefix => 'permission_') %>
+        </label>
+        <% end %>
+      </fieldset>
+      <% end %>
+      <%= hidden_field_tag 'personal_access_token[permissions][]', '' %>
+    </div>
+  </fieldset>
+</fieldset>
+
+<p><%= submit_tag l(:button_create) %></p>
+<% end %>
+
+<%# Selecting Custom opens the permissions the choice is about. Without this the
+    server-side default above only opens the fieldset after a *rejected* submit,
+    so the first thing a user choosing Custom saw was an error naming a control
+    that was still hidden.
+
+    Bound here rather than in application-legacy.js because that file is
+    precompiled into a digested asset, and this behaviour belongs to one form.
+    toggleFieldset is reused rather than reimplemented so the legend class and
+    the sprite arrow stay consistent with every other collapsible fieldset; it
+    is called only when the current state differs from the wanted one, which
+    makes this idempotent and correct on a redisplayed form that is already
+    open. %>
+<%= javascript_tag do %>
+  $(function() {
+    var radios = $('input[name="personal_access_token[scope_preset]"]');
+    var sync = function() {
+      var fieldset = $('#personal-access-token-permissions');
+      var wantOpen = radios.filter(':checked').val() === '<%= PersonalAccessToken::SCOPE_PRESET_CUSTOM %>';
+      if (fieldset.hasClass('collapsed') === wantOpen) {
+        toggleFieldset(fieldset.children('legend')[0]);
+      }
+    };
+    radios.on('change', sync);
+    sync();
+  });
+<% end %>
+
+<% content_for :sidebar do %>
+<%= render :partial => 'my/sidebar' %>
+<% end %>

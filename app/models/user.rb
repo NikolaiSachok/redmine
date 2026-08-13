@@ -102,6 +102,7 @@ class User < Principal
   has_one :api_token, lambda {where "#{table.name}.action='api'"}, :class_name => 'Token'
   has_many :email_addresses, :dependent => :delete_all
   has_many :reactions, dependent: :delete_all
+  has_many :personal_access_tokens, :dependent => :delete_all
   belongs_to :auth_source
 
   scope :logged, lambda {where("#{User.table_name}.status <> #{STATUS_ANONYMOUS}")}
@@ -113,6 +114,12 @@ class User < Principal
   attr_accessor :last_before_login_on
   attr_accessor :remote_ip
   attr_writer   :oauth_scope
+  attr_writer   :authenticated_by_personal_access_token
+  attr_accessor :personal_access_token_scope
+  # Which token authenticated this request, by id. Ephemeral like the two
+  # above, and the id only: the value is not stored anywhere, not even hashed
+  # on the user.
+  attr_accessor :authenticating_personal_access_token_id
 
   LOGIN_LENGTH_LIMIT = 60
   MAIL_LENGTH_LIMIT = 254
@@ -554,6 +561,12 @@ class User < Principal
     Token.find_active_user('api', key)
   end
 
+  def self.find_by_personal_access_token(value)
+    user = PersonalAccessToken.authenticate(value)
+    user.authenticated_by_personal_access_token = true if user
+    user
+  end
+
   # Makes find_by_mail case-insensitive
   def self.find_by_mail(mail)
     having_mail(mail).first
@@ -734,9 +747,10 @@ class User < Principal
   end
 
   def admin?
-    if authorized_by_oauth?
-      # when signed in via oauth, the user only acts as admin when the admin scope is set
-      super and @oauth_scope.include?(:admin)
+    if (scope = request_permission_scope)
+      # when the request is scoped -- by oauth or by a personal access token --
+      # the user only acts as admin when the admin scope is set
+      super and scope.include?(:admin)
     else
       super
     end
@@ -745,6 +759,26 @@ class User < Principal
   # true if the user has signed in via oauth
   def authorized_by_oauth?
     !@oauth_scope.nil?
+  end
+
+  # The permission scope this request is restricted to, or nil when it is not
+  # restricted. OAuth2 access tokens and personal access tokens use the same
+  # vocabulary -- permission names plus the synthetic :admin -- and the same
+  # enforcement points, and a request only ever carries one of them.
+  def request_permission_scope
+    authorized_by_oauth? ? @oauth_scope : @personal_access_token_scope
+  end
+
+  # true if this request is restricted by the scope of a personal access token
+  def scoped_by_personal_access_token?
+    !@personal_access_token_scope.nil?
+  end
+
+  # true if this request was authenticated by a personal access token.
+  # Such a request must not be able to read the permanent API key: a token that
+  # expires and can be revoked would otherwise buy one that does neither.
+  def authenticated_by_personal_access_token?
+    !!@authenticated_by_personal_access_token
   end
 
   # Return true if the user is allowed to do the specified action on a specific context
@@ -757,6 +791,14 @@ class User < Principal
   # * nil with options[:global] set : check if user has at least one role allowed for this action,
   #   or falls back to Non Member / Anonymous permissions depending if the user is logged
   def allowed_to?(action, context, options={}, &block)
+    scope = request_permission_scope
+    # An explicitly empty scope allows nothing. Role#allowed_permissions reads a
+    # blank scope as "unrestricted", so an empty one has to be caught before it
+    # gets there or it would fail open. Only personal access tokens are checked:
+    # what an empty oauth scope means is Doorkeeper's existing behaviour and is
+    # left exactly as it was.
+    return false if scoped_by_personal_access_token? && scope.empty?
+
     if context && context.is_a?(Project)
       return false unless context.allows_to?(action)
       # Admin users are authorized for anything else
@@ -767,7 +809,7 @@ class User < Principal
 
       roles.any? do |role|
         (context.is_public? || role.member?) &&
-        role.allowed_to?(action, @oauth_scope) &&
+        role.allowed_to?(action, scope) &&
         (block ? yield(role, self) : true)
       end
     elsif context && context.is_a?(Array)
@@ -786,7 +828,7 @@ class User < Principal
       # authorize if user has at least one role that has this permission
       roles = self.roles.to_a | [builtin_role]
       roles.any? do |role|
-        role.allowed_to?(action, @oauth_scope) &&
+        role.allowed_to?(action, scope) &&
         (block ? yield(role, self) : true)
       end
     else

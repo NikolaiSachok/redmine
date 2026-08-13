@@ -39,6 +39,17 @@ class SettingsControllerTest < Redmine::ControllerTest
     assert_select 'input[name=?][value=""]', 'settings[enabled_scm][]'
   end
 
+  # CORS-R2. The API tab is otherwise untested, so this is the only runnable
+  # coverage of the partial the CORS setting was added to.
+  def test_get_edit_api_tab_should_offer_the_cors_origins_setting
+    with_settings :rest_api_cors_origins => 'https://app.example.com' do
+      get :edit, :params => {:tab => 'api'}
+    end
+    assert_response :success
+
+    assert_select 'input[name=?][value=?]', 'settings[rest_api_cors_origins]', 'https://app.example.com'
+  end
+
   def test_get_edit_should_preselect_default_issue_list_columns
     with_settings :issue_list_default_columns => %w(tracker subject status updated_on) do
       get :edit

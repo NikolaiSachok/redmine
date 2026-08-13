@@ -61,7 +61,10 @@ class ApplicationController < ActionController::Base
     end
   end
 
-  before_action :session_expiration, :user_setup, :check_if_login_required, :set_localization, :check_password_change, :check_twofa_activation
+  # set_cors_headers runs before the access checks on purpose: a browser has to
+  # be able to read a 401 or a 403 from an allowed origin, and a filter that
+  # halts the chain would otherwise skip the headers entirely.
+  before_action :session_expiration, :user_setup, :set_cors_headers, :check_if_login_required, :set_localization, :check_password_change, :check_twofa_activation
   after_action :record_project_usage
 
   rescue_from ::Unauthorized, :with => :deny_access
@@ -731,6 +734,34 @@ class ApplicationController < ActionController::Base
 
   def api_request?
     %w(xml json).include? params[:format]
+  end
+
+  # Adds the CORS response headers when the request comes from an origin an
+  # administrator has allowed.
+  #
+  # Scoped to API requests. The HTML interface is same-origin by construction
+  # and relies on the session cookie, so making it cross-origin readable would
+  # widen the surface far beyond the REST API this setting is about.
+  def set_cors_headers
+    return unless api_request?
+    return unless Redmine::Cors.enabled?
+
+    # From here the response body and headers depend on the request's Origin,
+    # so a shared cache must key on it. This is set for every API response
+    # while the feature is on, including responses to origins that are not
+    # allowed and to requests with no Origin at all -- otherwise a cache could
+    # store a headerless response and replay it to an allowed origin, or the
+    # other way round.
+    response.headers['Vary'] = Redmine::Cors.vary_with_origin(response.headers['Vary'])
+
+    origin = request.headers['Origin'].to_s
+    return unless Redmine::Cors.allows?(origin)
+
+    # The allowed origin is echoed rather than a wildcard sent, so that only
+    # the listed origins are named. Access-Control-Allow-Credentials is never
+    # sent with it: pairing credentials with an echoed origin is what turns a
+    # CORS policy into a session hijack.
+    response.headers['Access-Control-Allow-Origin'] = origin
   end
 
   # Returns the API key present in the request

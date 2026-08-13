@@ -14,12 +14,14 @@ It is a deliberately small slice of a large ticket, branched from tag `6.1.2`. R
 | | |
 |---|---|
 | **Done** | PAT model with hashed storage and per-token expiry; REST API authentication; My account management screen; **administration overview of every user's tokens**; **an administrator ceiling on token lifetime**; **cleanup of long-expired rows**; unit, integration, functional and routing tests |
-| **Deferred** | Token scopes, audit logging, granular endpoint control, CORS, the 2FA posture, migration off the legacy API key — each an issue with reasoning |
+| **Also done** | **CORS for the REST API** (pillar #6 of the same ticket) — an administrator allowlist of origins, off by default |
+| **Deferred** | Token scopes, audit logging, granular endpoint control, the 2FA posture, migration off the legacy API key — each an issue with reasoning |
 | **Out of scope** | Rate limiting, excluded by the brief |
 | **Untouched** | The existing `api_key`, and `Token`, which it is built on |
 
-Deferred work is on the issue tracker rather than in this file's small print: issues #5–#8, #10 and
-#15, labelled `deferred`. Two pre-existing weaknesses found while reading the code are recorded as #11
+Deferred work is on the issue tracker rather than in this file's small print: issues #5, #6, #7, #10
+and #15, labelled `deferred`. Issue #8, CORS, started there and was implemented after the core was
+solid; it has its own section below. Two pre-existing weaknesses found while reading the code are recorded as #11
 and #12; #11 is now fixed, because the red team showed this feature makes it reachable with a new
 credential, and #12 stays open because closing it fully belongs to the OAuth path, not to this slice.
 
@@ -197,6 +199,55 @@ list would clean Rails' own log and nothing else: not the access log of any prox
 URL cannot be safely accepted from one, so the transport is refused rather than half-mitigated. The
 legacy key keeps all three transports; nothing existing was taken away.
 
+## Cross-origin resource sharing (issue #8, ticket pillar #6)
+
+A personal access token is only useful to a browser application if the browser is allowed to read the
+response, so CORS is the pillar that pairs most naturally with the core. **Administration → Settings →
+API → "Allowed origins for cross-origin API requests"** takes a comma-separated list; empty — the
+default — allows nothing.
+
+How it works, and the four choices worth defending:
+
+- **A controller filter, not middleware.** `ApplicationController#set_cors_headers` runs inside the
+  request Redmine has already classified, so it can reuse `api_request?` and `Setting.rest_api_enabled?`
+  rather than re-deriving "is this an API call" from the path. It is placed immediately after
+  `user_setup` and *before* the access checks, so an allowed origin can read a 401 or 403 instead of
+  an opaque network error. The only exception is the preflight, which has no route to run a filter on:
+  `OPTIONS` on a `.json`/`.xml` path goes to a catch-all route and `CorsController`.
+- **Echoed, never wildcarded, and never with credentials.** `Access-Control-Allow-Credentials` is
+  never sent, at all. That is what makes echoing the origin safe: a cross-origin caller cannot use the
+  session cookie, so it must present an API key or a personal access token in a header — which is
+  exactly the credential this branch added. Wildcards are not accepted in the setting either; `*`
+  typed into the box allows nothing rather than everything.
+- **Exact matching.** Scheme, host and port must all agree. Configured values are tidied (whitespace,
+  a trailing slash, letter case); the `Origin` that arrives on the wire is compared as it stands,
+  because a browser always serialises it canonically and anything else did not come from one.
+  `null` can never be allowed, even if an administrator types it in.
+- **`Vary: Origin` on every API response while the feature is on** — including responses to origins
+  that are *not* allowed, and to requests with no `Origin` at all. Otherwise a shared cache could
+  store a headerless response and replay it to an allowed origin, or the reverse.
+
+The preflight answers identically for every path — `204`, empty body, same headers — so it cannot be
+used to enumerate which resources exist or which ones the caller could read. It asserts nothing about
+authorisation; the real request that follows is authenticated exactly as before.
+
+**Limits of the CORS slice**, named rather than buried:
+
+- **Hand-rolled rather than `rack-cors`.** The gem is not in the `Gemfile` and adding a dependency to
+  a slice this size needs a better reason than convenience. The honest cost is that its well-tested
+  edge cases — `null`, preflight, `Vary` — are reimplemented here; they are covered by tests, which is
+  not the same as a decade of production use.
+- **One allowlist for the whole API.** No per-endpoint or per-origin method restriction. The allowed
+  methods and request headers are a fixed list, not reflected from the preflight request.
+- **Only controllers that inherit `ApplicationController`.** The Doorkeeper OAuth endpoints do not,
+  so a browser-based OAuth flow is not covered by this setting.
+- **`jsonp_enabled` is untouched.** It predates this work and, when switched on, already lets any
+  origin read `GET` responses through a script tag — a wider hole than this setting can open. It is
+  off by default and was left alone rather than quietly changed.
+- **Removing an origin is not instant** for a browser that has cached a preflight: `Access-Control-Max-Age`
+  is 600 seconds. The actual request is re-checked every time, so a removed origin loses read access
+  immediately; only the preflight is stale.
+
 ## Running and verifying
 
 ```bash
@@ -214,6 +265,8 @@ bin/rails test test/unit/personal_access_token_test.rb
 bin/rails test test/integration/api_test/personal_access_token_auth_test.rb
 bin/rails test test/functional/my_controller_test.rb
 bin/rails test test/integration/routing/my_test.rb
+bin/rails test test/unit/lib/redmine/cors_test.rb
+bin/rails test test/integration/api_test/cors_test.rb
 ```
 
 **CI status.** Redmine's own `Tests` workflow is green on this branch — all nine cells of its matrix
@@ -227,7 +280,13 @@ Full suite, run on this checkout:
 | | runs | assertions | failures | errors | skips |
 |---|---|---|---|---|---|
 | Before any change (tag `6.1.2`) | 5479 | 24753 | 0 | 0 | 44 |
-| After | 5528 | 24901 | 0 | 0 | 44 |
+| After the personal-access-token work | 5528 | 24901 | 0 | 0 | 44 |
+
+The CORS work landed after that measurement and adds 33 tests (10 in `test/unit/lib/redmine/cors_test.rb`,
+22 in `test/integration/api_test/cors_test.rb`, 1 in `test/functional/settings_controller_test.rb`).
+Those files, `test/integration/api_test/`, `test/integration/routing/`,
+`test/functional/my_controller_test.rb` and `test/functional/settings_controller_test.rb` were run and
+are green; the full-suite row is re-measured rather than extrapolated, so it is not restated here.
 
 The difference is exactly the 49 tests added here — 18 in `personal_access_token_test.rb`, 18 in
 `personal_access_token_auth_test.rb`, 13 in `my_controller_test.rb` — and nothing existing changed
@@ -315,6 +374,49 @@ $ ./ui-verify.sh
     DELETE    -> HTTP 302
     rows remaining      : 1
 ```
+
+### CORS, against the same running server
+
+Unedited `curl` headers, with **Allowed origins** set to `https://app.example.com`:
+
+```console
+### 1. allowed origin, authenticated GET
+HTTP/1.1 200 OK
+vary: Origin
+access-control-allow-origin: https://app.example.com
+
+### 2. hostile origin
+HTTP/1.1 200 OK
+vary: Origin
+
+### 3. suffix / prefix / scheme / port variants -- count of Allow-Origin headers
+https://app.example.com.evil.net         -> 0
+https://evil-app.example.com             -> 0
+http://app.example.com                   -> 0
+https://app.example.com:8443             -> 0
+null                                     -> 0
+
+### 4. preflight, allowed
+HTTP/1.1 204 No Content
+vary: Origin
+access-control-allow-origin: https://app.example.com
+access-control-allow-methods: GET, POST, PUT, PATCH, DELETE, OPTIONS
+access-control-allow-headers: Accept, Authorization, Content-Type, X-Redmine-API-Key, X-Redmine-Switch-User, X-Redmine-Nometa
+access-control-max-age: 600
+
+### 5. preflight, hostile
+HTTP/1.1 404 Not Found
+vary: Origin
+
+### 6. HTML page, allowed origin
+HTTP/1.1 200 OK
+vary: Accept
+```
+
+No `access-control-allow-credentials` appears anywhere above, by design. With the setting emptied
+again, the same requests return `HTTP/1.1 200 OK` with no `vary` and no CORS header at all, and the
+preflight returns `404` — which is what an `OPTIONS` request to Redmine did before this feature
+existed. A `*` typed into the setting behaves identically to an empty one.
 
 ## Assumptions
 

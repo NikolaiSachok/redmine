@@ -512,6 +512,7 @@ en:
   setting_non_working_week_days: Non-working days
   setting_jsonp_enabled: Enable JSONP support
   setting_personal_access_token_max_lifetime_days: Maximum personal access token lifetime (days)
+  setting_rest_api_cors_origins: Allowed origins for cross-origin API requests
   setting_default_projects_tracker_ids: Default trackers for new projects
   setting_mail_handler_excluded_filenames: Exclude attachments by name
   setting_force_default_language_for_anonymous: Force default language for anonymous users
@@ -1290,6 +1291,7 @@ en:
   text_are_you_sure: Are you sure?
   text_personal_access_token_no_expiration: A token with no expiration date stays valid until it is revoked.
   text_personal_access_token_max_lifetime: Maximum number of days a personal access token may be valid for. 0 means no limit, and lets users create tokens that never expire.
+  text_rest_api_cors_origins: Comma-separated list of origins that may call the REST API from a browser, for example https://app.example.com, https://staging.example.com:8443. Scheme, host and port must match exactly. Leave empty to allow none. Requests are never authenticated by cookie across origins, so callers must send an API key or a personal access token.
   text_journal_changed: "%{label} changed from %{old} to %{new}"
   text_journal_changed_no_detail: "%{label} updated"
   text_journal_set_to: "%{label} set to %{value}"

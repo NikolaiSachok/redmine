@@ -7,6 +7,10 @@ only as a digest, revocable from My account.
 It is a deliberately small slice of a large ticket, branched from tag `6.1.2`. Redmine's own
 `README.rdoc` is unchanged and still describes the product; this file describes the change.
 
+> **Reviewers: start with [`REVIEW.md`](REVIEW.md).** This file documents *the feature*. That one
+> documents *the work* — the trajectory, the decisions and what they cost, how the AI development
+> workflow began and what it became, and why a task calibrated at two hours ran to twenty.
+
 ---
 
 ## What is here

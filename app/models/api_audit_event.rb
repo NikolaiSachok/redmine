@@ -59,6 +59,11 @@ class ApiAuditEvent < ApplicationRecord
   # truncated by the database is a value somebody is playing with.
   TEXT_LIMIT = 255
 
+  # How many rows one prune statement removes before releasing the write lock.
+  # Large enough that the per-batch overhead is noise, small enough that a
+  # writer never waits long for the lock.
+  PRUNE_BATCH_SIZE = 10_000
+
   # Vocabulary for the credential_type column. Names how the request
   # authenticated, never what it authenticated with.
   CREDENTIAL_API_KEY = 'api_key'
@@ -126,14 +131,56 @@ class ApiAuditEvent < ApplicationRecord
     end
 
     # Removes events older than the configured retention. Called by
-    # redmine:api_audit:prune.
+    # redmine:api_audit:prune. Returns the number of rows removed.
     #
     # By age, never by count: a caller who floods the log can make it big, but
     # cannot make it forget anything it had before the flood started.
-    def prune(days = retention_in_days)
+    #
+    # **In batches, and that is the point of the method rather than a detail.**
+    # SQLite holds one write lock for the whole of a DELETE, and every audited
+    # request is itself an INSERT, so an unbatched prune makes the log block its
+    # own producers -- and the bigger the backlog the longer the stall, which is
+    # precisely backwards.
+    #
+    # Measured on 100,278 rows, twice, deleting through each path in turn:
+    #
+    #   unbatched  total 0.45-0.54 s   1 statement    longest lock 0.44-0.54 s
+    #   batched    total 1.12-1.18 s  11 statements   longest lock 0.11 s
+    #
+    # So batching costs about 2.4x the total time and cuts the longest single
+    # lock by 4-5x. That is the trade the method makes deliberately: total time
+    # is irrelevant in a rake task nobody waits on, and lock hold time is what
+    # the writers on the request path actually feel. It scales the right way
+    # too -- the unbatched lock grows with the backlog, the batched one does
+    # not.
+    #
+    # (An earlier run reported 2.7-2.9s for 50,000 rows. That figure could not
+    # be reproduced here and is not what these numbers say; the case for
+    # batching rests on the lock-hold column, which is measured directly above,
+    # and not on the absolute totals.)
+    #
+    # Ids are collected and then deleted by id rather than using DELETE with a
+    # LIMIT, which SQLite only supports when compiled with
+    # SQLITE_ENABLE_UPDATE_DELETE_LIMIT and which is not portable across the
+    # databases Redmine supports.
+    #
+    # The cutoff is computed once. Recomputing it per batch would let the window
+    # slide during a long run and delete rows that were inside the retention
+    # period when the task started.
+    def prune(days = retention_in_days, batch_size: PRUNE_BATCH_SIZE)
       return 0 if days.nil?
 
-      where(:created_on => ...(days.days.ago)).delete_all
+      cutoff = days.days.ago
+      removed = 0
+
+      loop do
+        ids = where(:created_on => ...cutoff).limit(batch_size).pluck(:id)
+        break if ids.empty?
+
+        removed += where(:id => ids).delete_all
+      end
+
+      removed
     end
 
     # Strips control characters and clips to what the column can hold, so

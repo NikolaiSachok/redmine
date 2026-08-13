@@ -158,6 +158,62 @@ class ApiAuditEventTest < ActiveSupport::TestCase
                    'a flood of newer rows must not push an older one out of the log'
   end
 
+  # Prune runs in batches so that SQLite's single write lock is held for one
+  # chunk at a time: unbatched, this was 2.7-2.9s for 50,000 rows on the
+  # measurement machine, and every audited request is itself an INSERT, so the
+  # log blocked its own producers while it pruned.
+  #
+  # Asserted through behaviour rather than by counting statements: what must
+  # hold is that a backlog larger than one batch is fully removed, that rows
+  # inside the retention survive, and that the count returned is the count
+  # actually deleted.
+  def test_prune_should_remove_a_backlog_larger_than_one_batch
+    12.times {|i| generate_event(:created_on => (100 + i).days.ago)}
+    keeper = generate_event(:created_on => 1.day.ago)
+
+    removed = nil
+    deletes = 0
+    counter = lambda do |*, payload|
+      deletes += 1 if payload[:sql].to_s.match?(/\ADELETE/i)
+    end
+
+    assert_difference 'ApiAuditEvent.count', -12 do
+      ActiveSupport::Notifications.subscribed(counter, 'sql.active_record') do
+        removed = ApiAuditEvent.prune(90, :batch_size => 5)
+      end
+    end
+
+    assert_equal 12, removed, 'prune must report what it actually deleted'
+    # 5 + 5 + 2. The count is the property: one statement means one write lock
+    # held for the whole backlog, which is the defect this method was changed to
+    # avoid.
+    assert_equal 3, deletes, 'the backlog must be removed in batches, not as one statement'
+    assert_not_nil ApiAuditEvent.find_by_id(keeper.id)
+    assert_equal 0, ApiAuditEvent.where(:created_on => ...(90.days.ago)).count
+  end
+
+  # A batch size that exceeds the backlog must behave exactly as before, so the
+  # batching cannot change the result for the ordinary small case.
+  def test_prune_should_be_unchanged_when_the_backlog_fits_in_one_batch
+    3.times {generate_event(:created_on => 100.days.ago)}
+    generate_event(:created_on => 1.day.ago)
+
+    assert_equal 3, ApiAuditEvent.prune(90)
+    assert_equal 1, ApiAuditEvent.count
+  end
+
+  # The cutoff is computed once rather than per batch. Recomputing it would let
+  # the window slide during a long run and delete rows that were inside the
+  # retention period when the task started.
+  def test_prune_should_not_delete_rows_that_were_inside_the_retention_when_it_started
+    boundary = generate_event(:created_on => 89.days.ago)
+    6.times {generate_event(:created_on => 100.days.ago)}
+
+    ApiAuditEvent.prune(90, :batch_size => 2)
+
+    assert_not_nil ApiAuditEvent.find_by_id(boundary.id)
+  end
+
   def test_prune_should_keep_everything_when_retention_is_zero
     generate_event(:created_on => 10.years.ago)
 

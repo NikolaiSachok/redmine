@@ -103,6 +103,10 @@ Rails.application.routes.draw do
   delete 'my/personal_access_tokens/:id', :to => 'my#revoke_personal_access_token', :as => 'my_personal_access_token'
 
   resources :personal_access_tokens, :only => [:index, :destroy]
+  # The audit log is read as a page or exported as CSV. There is deliberately
+  # no json/xml representation: a REST endpoint for the log is self-referential
+  # and is deferred.
+  resources :api_audit_events, :only => [:index], :constraints => {:format => /html|csv/}
   match 'my/password', :controller => 'my', :action => 'password', :via => [:get, :post]
   match 'my/add_block', :controller => 'my', :action => 'add_block', :via => :post
   match 'my/remove_block', :controller => 'my', :action => 'remove_block', :via => :post

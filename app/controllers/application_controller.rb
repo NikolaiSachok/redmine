@@ -93,6 +93,26 @@ class ApplicationController < ActionController::Base
 
   include Redmine::SudoMode::Controller
 
+  # The API audit log is written here rather than from an after_action, and
+  # the difference is the whole point of it.
+  #
+  # Rails skips after_action callbacks when an earlier filter renders and
+  # halts, and the responses this log most needs are exactly those: the three
+  # refusals rendered inside user_setup itself (a revoked OAuth token, HTTP
+  # Basic while 2FA is active, an unchanged password), require_login's 401 and
+  # check_api_endpoint_enabled's 403. An after_action would record every
+  # successful call and none of the authentication failures, which is the
+  # wrong half. An ensure around process_action cannot be skipped by any
+  # filter ordering, and still runs when the action raises.
+  #
+  # Redmine::ApiAudit.record swallows its own errors, so nothing here can
+  # change what the caller received.
+  def process_action(*)
+    super
+  ensure
+    Redmine::ApiAudit.record(self, $!)
+  end
+
   def session_expiration
     if session[:user_id] && Rails.application.config.redmine_verify_sessions != false
       if session_expired? && !try_to_autologin
@@ -148,6 +168,11 @@ class ApplicationController < ActionController::Base
       end
     end
     if user.nil? && Setting.rest_api_enabled? && accept_api_auth?
+      # Remember that an API credential was *offered*, before knowing whether
+      # it works. A rejected credential leaves no authenticated user and no
+      # flag behind, and an authentication failure with nothing recorded is
+      # exactly the gap an audit log exists to close.
+      @api_credential_presented = true if api_credential_in_request?
       if (key = api_key_from_request)
         # Use API key
         user = User.find_by_api_key(key)
@@ -190,7 +215,13 @@ class ApplicationController < ActionController::Base
           # over or the restrictions that depend on it silently stop applying.
           su.authenticated_by_personal_access_token = user.authenticated_by_personal_access_token?
           su.personal_access_token_scope = user.personal_access_token_scope
+          su.authenticating_personal_access_token_id = user.authenticating_personal_access_token_id
           logger.info("  User switched by: #{user.login} (id=#{user.id})") if logger
+          # Who actually acted, kept on the controller rather than on the user
+          # object that is about to be replaced. The audit log has to name both
+          # identities: the single most important row in it is the one an
+          # impersonator would want to read as somebody else.
+          @api_audit_impersonator = user
           user = su
         else
           render_error :message => 'Invalid X-Redmine-Switch-User header', :status => 412
@@ -875,6 +906,73 @@ class ApplicationController < ActionController::Base
   def personal_access_token_from_request
     value = request.headers["X-Redmine-API-Key"].to_s
     value if value.start_with?(PersonalAccessToken::PREFIX)
+  end
+
+  # True when the request carries something that the API branch of
+  # find_current_user would try to authenticate with, whether or not it works.
+  def api_credential_in_request?
+    api_key_from_request.present? ||
+      personal_access_token_from_request.present? ||
+      request.authorization.present? ||
+      oauth_token_in_params?
+  end
+
+  # Doorkeeper accepts a bearer token in a request parameter as well as in the
+  # Authorization header (from_access_token_param, from_bearer_param), so both
+  # count as a credential being offered.
+  def oauth_token_in_params?
+    params[:access_token].present? || params[:bearer_token].present?
+  end
+
+  # True when an API credential, rather than the session, authenticated this
+  # request. Read by check_api_endpoint_enabled and by the audit log.
+  def authenticated_by_api_credential?
+    !!@authenticated_by_api_credential
+  end
+
+  # True when an API credential was offered on a path that accepts one, even if
+  # it did not authenticate.
+  def api_credential_presented?
+    !!@api_credential_presented
+  end
+
+  # The user who actually held the credential when X-Redmine-Switch-User was
+  # used, or nil. Kept on the controller, not on the user object, because
+  # impersonation replaces the user object -- twice now a per-request property
+  # recorded there has been silently dropped by exactly that.
+  attr_reader :api_audit_impersonator
+
+  # Names how the request authenticated, for the audit log. Never the value of
+  # anything.
+  #
+  # What actually authenticated wins where the request knows it: a personal
+  # access token offered as an HTTP Basic username is a token, not a password.
+  def api_audit_credential_type
+    user = User.current
+    return ApiAuditEvent::CREDENTIAL_PERSONAL_ACCESS_TOKEN if user&.authenticated_by_personal_access_token?
+    return ApiAuditEvent::CREDENTIAL_OAUTH if user&.authorized_by_oauth?
+
+    api_audit_offered_credential_type
+  end
+
+  # What the request offered, in the order find_current_user tries them. This
+  # is the answer whenever nothing authenticated, which is most of what an
+  # audit log is for.
+  def api_audit_offered_credential_type
+    if api_key_from_request.present?
+      # The API key and the token share the X-Redmine-API-Key header, and only
+      # the token carries the prefix. A token is never read from a parameter,
+      # so a key= parameter is an API key whatever it looks like.
+      if params[:key].blank? && personal_access_token_from_request.present?
+        ApiAuditEvent::CREDENTIAL_PERSONAL_ACCESS_TOKEN
+      else
+        ApiAuditEvent::CREDENTIAL_API_KEY
+      end
+    elsif /\ABearer /i.match?(request.authorization.to_s) || oauth_token_in_params?
+      ApiAuditEvent::CREDENTIAL_OAUTH
+    elsif /\ABasic /i.match?(request.authorization.to_s)
+      ApiAuditEvent::CREDENTIAL_HTTP_BASIC
+    end
   end
 
   # Returns the API 'switch user' value if present

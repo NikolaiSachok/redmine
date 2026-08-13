@@ -14,6 +14,17 @@
   <%= setting_text_field :rest_api_cors_origins, :size => 60 %>
   <em class="info"><%= l(:text_rest_api_cors_origins) %></em>
 </p>
+
+<p>
+  <%= setting_select :rest_api_audit_level,
+        ApiAuditEvent::LEVELS.map {|level| [l("label_api_audit_level_#{level}"), level]} %>
+  <em class="info"><%= l(:text_rest_api_audit_level) %></em>
+</p>
+
+<p>
+  <%= setting_text_field :rest_api_audit_retention_days, :size => 6 %>
+  <em class="info"><%= l(:text_rest_api_audit_retention_days) %></em>
+</p>
 </div>
 
 <h3><%= l(:setting_rest_api_disabled_endpoints) %></h3>

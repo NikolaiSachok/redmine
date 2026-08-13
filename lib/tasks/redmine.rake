@@ -41,6 +41,13 @@ namespace :redmine do
     end
   end
 
+  namespace :api_audit do
+    desc 'Removes API audit events older than the configured retention period.'
+    task :prune => :environment do
+      ApiAuditEvent.prune
+    end
+  end
+
   namespace :users do
     desc 'Removes registered users that have not been activated after a number of days. Use DAYS to set the number of days, defaults to 30 days.'
     task :prune => :environment do

@@ -14,15 +14,15 @@ It is a deliberately small slice of a large ticket, branched from tag `6.1.2`. R
 | | |
 |---|---|
 | **Done** | PAT model with hashed storage and per-token expiry; REST API authentication; My account management screen; **administration overview of every user's tokens**; **an administrator ceiling on token lifetime**; **cleanup of long-expired rows**; unit, integration, functional and routing tests |
-| **Also done** | **Permission scopes for tokens** — one of pillar #2's four bullets: a read-only preset, a full-access preset and a permission picker, enforced through the mechanism Redmine already uses for OAuth2 scopes; **CORS for the REST API** (pillar #6) — an administrator allowlist of origins, off by default; **granular API endpoint control** (pillar #5) — one checkbox per API endpoint, everything enabled by default |
-| **Deferred** | The rest of pillar #2 — per-tracker scoping, per-project scoping and an administrator-defined scope vocabulary; audit logging, the 2FA posture, migration off the legacy API key — each an issue with reasoning |
+| **Also done** | **Permission scopes for tokens** — one of pillar #2's four bullets: a read-only preset, a full-access preset and a permission picker, enforced through the mechanism Redmine already uses for OAuth2 scopes; **CORS for the REST API** (pillar #6) — an administrator allowlist of origins, off by default; **granular API endpoint control** (pillar #5) — one checkbox per API endpoint, everything enabled by default; **structured API audit logging** (pillar #4) — a table, a filterable administration screen with CSV export, a level setting defaulting to writes and refused requests, a retention setting and a prune task |
+| **Deferred** | The rest of pillar #2 — per-tracker scoping, per-project scoping and an administrator-defined scope vocabulary; a REST endpoint for the audit log; the 2FA posture; migration off the legacy API key — each an issue with reasoning |
 | **Out of scope** | Rate limiting, excluded by the brief |
 | **Untouched** | The existing `api_key`, and `Token`, which it is built on |
 
-Deferred work is on the issue tracker rather than in this file's small print: issues #6, #10,
-#15, #17, #18 and #19, labelled `deferred`. CORS (#8) and granular endpoint control (#7) both
-started there and were implemented after the core was solid; they and the scopes work each have
-their own section below. Two pre-existing weaknesses found while reading the code are recorded as #11
+Deferred work is on the issue tracker rather than in this file's small print: issues #10,
+#15, #17, #18 and #19, labelled `deferred`. CORS (#8), granular endpoint control (#7) and audit
+logging (#6) all started there and were implemented after the core was solid; they and the scopes
+work each have their own section below. Two pre-existing weaknesses found while reading the code are recorded as #11
 and #12; #11 is now fixed, because the red team showed this feature makes it reachable with a new
 credential, and #12 stays open because closing it fully belongs to the OAuth path, not to this slice.
 
@@ -565,6 +565,212 @@ asserted the opposite; block 3 is the baseline it now matches byte for byte. Eve
 runs through the real Rack stack, and none of them caught it, because they compared the `.json` path
 only.
 
+## Structured API audit logging (issue #6, ticket pillar #4)
+
+Redmine records API activity only in the Rails log, as unstructured lines mixed in with everything
+else. Pillar #4 asks for "a dedicated queryable format". This adds a table, a `Query` subclass over
+it, an administration screen with filters and CSV export, a level setting, a retention setting and a
+prune task.
+
+**Administration → API audit log** lists what was recorded. **Administration → Settings → API**
+carries the two settings that govern it.
+
+### What a row holds, and what it deliberately does not
+
+| column | value |
+|---|---|
+| `created_on` | when |
+| `user_id`, `login` | who the request acted **as** |
+| `impersonator_id`, `impersonator_login` | who actually held the credential, when `X-Redmine-Switch-User` was used |
+| `credential_type` | `api_key`, `personal_access_token`, `oauth` or `http_basic` |
+| `personal_access_token_id` | **which token**, by id |
+| `http_method`, `endpoint`, `path` | what was called — `issues#create`, `POST`, `/issues.json` |
+| `ip` | where from |
+| `status` | what came back |
+
+**No credential value is stored, and the query string is not stored either.** Only
+`request.path` is kept, never `request.fullpath`, because `?key=` is a supported transport for the
+legacy API key and an audit table full of live keys would be the softest place in the installation to
+steal every one of them at once. A personal access token is referenced by its id; its value exists
+nowhere but the caller's own keeping, and only a digest of it is stored, in a different table.
+
+The login is stored **beside** the user id rather than only as a foreign key, so the row still names
+who acted after the account is deleted — which is exactly what somebody covering their tracks would
+do next. There are no foreign keys and no `dependent:` options anywhere near this table.
+
+### The level setting, and why the default is not "everything"
+
+Volume decides this feature's shape. A fifty-person team with one polling client each is on the order
+of 72k API requests a day, 90–95% of them polling `GET`s; a year at 20k/day is ~7.3M rows. Redmine's
+own list pattern runs `COUNT(*)` on every page view, so the count degrades before the row fetch does.
+
+Three levels:
+
+| level | records |
+|---|---|
+| **Off** | nothing |
+| **Writes and refused requests** (default) | every non-`GET`/`HEAD`/`OPTIONS` call, every `401`/`403`/`412`, and every request that offered an API credential which did not authenticate |
+| **Every API request** | all of it |
+
+The default cuts the volume by an order of magnitude and loses nothing an audit trail is for: "who
+changed what, and who tried to get in", never "who polled the issue list".
+
+The third clause of the default level is the one worth arguing for. Status alone is not a sufficient
+definition of "authentication failure": an **HTML** request carrying a bad API key is answered with a
+`302` to the login form, which no list of refusal statuses can tell apart from the redirect after a
+successful write. So a credential that was offered and rejected is recorded whatever status followed.
+Line 4 of the transcript below is that case, observed against a running server.
+
+### Where it hooks, and why not an `after_action`
+
+The recorder is called from an `ensure` around `ApplicationController#process_action`, not from an
+`after_action`. Rails **skips** `after_action` callbacks entirely when an earlier filter renders and
+halts the chain — and the responses this log most needs are exactly those: the three refusals
+rendered inside `user_setup` itself (a revoked OAuth token, HTTP Basic while 2FA is active, an
+unchanged password), `require_login`'s `401`, and the endpoint gate's `403`. An `after_action` would
+record every successful call and none of the authentication failures, which is the wrong half.
+
+That is not an argument, it is a measurement. Replacing the `ensure` with an `after_action` and
+re-running the file **fails 7 of 21 tests**, including every authentication-failure case: the `401`
+for a rejected key, the `412` for a refused `X-Redmine-Switch-User`, and the `403` from
+`must_change_password`. The `ensure` was then restored.
+
+Two consequences follow from the same choice and are stated rather than hidden:
+
+- The recorder also runs when the action raises. The status is then taken from the exception the same
+  way Rails' own exception middleware takes it, rather than from the response, which still holds its
+  default at that point.
+- **Nothing outside a controller is recorded.** A routing `404`, a malformed JSON body's `400` and
+  the Doorkeeper OAuth token endpoints (which do not inherit `ApplicationController`) never reach it.
+
+### Reliability
+
+`Redmine::ApiAudit.record` wraps everything in one `rescue` that logs and returns nil. An audit trail
+that can take the product down is a denial of service with good intentions. Pinned by a test that
+makes the insert raise and asserts the `POST` still answers `201` and the issue still exists.
+
+With the level off, the first thing the recorder does is read one memoised setting and return.
+
+### Retention, and the anti-forensics question
+
+`redmine:api_audit:prune` deletes events older than the configured retention (90 days by default; `0`
+keeps them forever). It sits next to `redmine:tokens:prune`, and like it, **nothing schedules it for
+you**.
+
+Pruning is **by age, never by count**. That is the whole answer to "can an attacker flood the log to
+push earlier evidence out of it": a flood costs disk, but a "keep the newest N rows" policy is what
+would let it erase anything, and this is not one. Pinned by
+`test_audit_003_prune_should_remove_by_age_so_a_flood_cannot_evict_earlier_evidence`, which writes
+one old row, floods 50 newer ones, prunes, and asserts the old row is still there.
+
+What is **accepted**: an unauthenticated caller can still make the table grow, because refused
+requests are recorded at the default level and that is the point of recording them. Rate limiting is
+excluded from this exercise by the brief, so nothing here throttles that.
+
+### Querying it
+
+`ApiAuditQuery` is a `Query` subclass, so filters, column selection, sorting, pagination and CSV
+export all come from machinery Redmine already has and already tests — the same route `UserQuery`
+takes for the administration user list. Filters: time, login, impersonator, credential type, method,
+endpoint, path, status, IP. The export is capped by `issues_export_limit`, like every other export.
+
+**The default view is time-windowed to 7 days.** This is the one table in the installation that grows
+without an upper bound, and the screen's `COUNT(*)` is what degrades first. The window is a real
+default filter on the query, not a view accident, and it can be widened or removed from the filter
+form like any other.
+
+Administrators only, in both directions: `require_admin` on the controller, and `ApiAuditQuery.visible`
+returns nothing to anybody else so a saved query cannot be borrowed.
+
+### Limits of the audit log
+
+- **No REST endpoint for the log itself**, deliberately. It is self-referential — reading the log
+  would be an API call the log records — and it concentrates who-did-what for every user in the
+  installation, which deserves its own decision rather than arriving as a side effect of this one.
+  `/api_audit_events.json` and `.xml` are refused by a route constraint, so that is a fact rather
+  than an omission. Pinned by `test/integration/routing/api_audit_events_test.rb`.
+- **HTML pages browsed with a session cookie are not recorded at all.** This log covers the API
+  surface: `api_request?`, plus anything an API credential was offered to. Redmine has no audit trail
+  for the web interface and this does not add one.
+- **Only what the request carried, not what it changed.** A row says `PUT /issues/1.json` returned
+  `204`; it does not say which fields moved. Redmine's journals already record that for issues, and
+  duplicating them here would be a different feature.
+- **Response bodies, request bodies and query strings are never recorded.** Deliberate for the query
+  string; the other two are a size decision.
+- **The credential type is what the request offered when nothing authenticated.** A personal access
+  token used as an HTTP Basic *username* is recorded as `personal_access_token` when it works,
+  because the user object says so, but a *rejected* one is recorded as `http_basic`, because at that
+  point the request is indistinguishable from a bad password.
+- **CSV formula injection is not neutralised, and the export was measured rather than assumed.**
+  Redmine's `Redmine::Export::CSV` strips no `=`/`+`/`-`/`@` prefix anywhere in the product, and this
+  export uses the same generator; fixing it here only would be inconsistent. The exposure was then
+  measured rather than left as a shrug: every column in this table is bounded. Logins match
+  `/\A[a-z0-9_\-@.]*\z/i`, so one *can* begin with `-` or `@` but can never contain `(`, `!` or `:`
+  — which is what a formula needs to call a function or reference another cell. `endpoint` is a
+  controller/action pair from the route table, `path` always begins with `/`, `http_method` is one of
+  Rails' known verbs (an unknown verb never reaches the controller), `status` is an integer, `ip`
+  comes from Rails' `RemoteIp`, and the credential column is a fixed vocabulary rendered as a
+  translated label. No cell in this export can begin a formula that does more than arithmetic on
+  literals.
+- **Turning the log off is not itself recorded**, because settings changes are not API calls. An
+  administrator who can reach the settings screen can silence the log.
+- **`rest_api_audit_level` defaults to on.** An upgrade therefore starts writing rows without being
+  asked to. That is deliberate — an audit trail nobody switched on records nothing on the day it is
+  needed — but it is a behaviour change on upgrade and is called out here rather than discovered.
+
+### End to end, against a running server
+
+Unedited output of a script run against an isolated instance on port 3005 with its own database. The
+token is held in a shell variable and never echoed.
+
+```console
+$ sh audit_e2e.sh
+=== level = writes (the default) ===
+GET  /issues.json           (read, valid token)            HTTP 200   rows 0 -> 0
+POST /issues.json           (write, valid token)           HTTP 201   rows 0 -> 1
+GET  /users/current.json    (bad API key)                  HTTP 401   rows 1 -> 2
+GET  /users/current         (bad key, HTML)                HTTP 302   rows 2 -> 3
+POST /issues.json           (switch-user bob)              HTTP 201   rows 3 -> 4
+
+=== what the log holds ===
+created_on          login        impersonator credential             method endpoint               st
+2026-08-13 05:30:22 audit_admin               personal_access_token  POST   issues#create          201
+2026-08-13 05:30:26                           api_key                GET    users#show             401
+2026-08-13 05:30:29                           api_key                GET    users#show             302
+2026-08-13 05:30:33 audit_bob    audit_admin  personal_access_token  POST   issues#create          201
+
+=== no credential value is anywhere in the table (AUDIT-R7) ===
+token value present in the table:  false
+token digest present in the table: false
+token referenced by id:            [7]
+any column holding a query string: false
+
+=== the same read at level = all, and at level = off ===
+GET  /issues.json           (level = all)                  HTTP 200   rows 4 -> 5
+POST /issues.json           (level = off)                  HTTP 201   rows 5 -> 5
+
+=== retention prunes by age, so a flood cannot evict earlier evidence ===
+rows before prune: 5 (oldest 2026-01-25)
+rows after  prune: 4 (oldest 2026-08-13)
+
+=== the log is administrators only (AUDIT-R6) ===
+GET  /api_audit_events      (as a non-administrator)       HTTP 403
+GET  /api_audit_events      (as an administrator)          HTTP 200
+GET  /api_audit_events.csv  (as an administrator)          HTTP 200
+GET  /api_audit_events.json (no API representation)        HTTP 404
+
+--- first lines of the CSV export ---
+Time,Login,Impersonated by,Credential,Method,Endpoint,Response,IP address
+08/13/2026 05:30 AM,audit_admin,"",Personal access token,GET,issues#index,200,127.0.0.1
+08/13/2026 05:30 AM,audit_bob,audit_admin,Personal access token,POST,issues#create,201,127.0.0.1
+08/13/2026 05:30 AM,"","",API key,GET,users#show,302,127.0.0.1
+```
+
+Line 1 is the level default doing its job — a read with a valid token costs no row. Line 4 is the
+`302` case argued above: the HTML request carried a rejected credential and was recorded anyway. The
+fifth row of the table is the impersonation requirement: `audit_bob` acted, `audit_admin` was the one
+holding the token, and both are in the row.
+
 ## Running and verifying
 
 ```bash
@@ -585,7 +791,14 @@ bin/rails test test/integration/routing/my_test.rb
 bin/rails test test/unit/lib/redmine/cors_test.rb
 bin/rails test test/integration/api_test/cors_test.rb
 bin/rails test test/integration/routing/cors_test.rb
+bin/rails test test/unit/api_audit_event_test.rb
+bin/rails test test/functional/api_audit_events_controller_test.rb
+bin/rails test test/integration/api_test/api_audit_test.rb
+bin/rails test test/integration/routing/api_audit_events_test.rb
 ```
+
+The audit log adds a migration, so `rake db:migrate` (and `RAILS_ENV=test rake db:migrate`) has to be
+re-run on an existing checkout before the server will boot.
 
 **CI status.** Redmine's own `Tests` workflow is green on this branch — all nine cells of its matrix
 (SQLite, PostgreSQL, MySQL × Ruby 3.2, 3.3, 3.4) plus the Chrome system-test job. The `Lint` workflow

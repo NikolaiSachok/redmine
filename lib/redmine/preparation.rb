@@ -291,6 +291,15 @@ module Redmine
                   :caption => :label_personal_access_token_plural,
                   :icon => 'key',
                   :html => {:class => 'icon icon-key'}
+        # Not gated on rest_api_enabled?, unlike the two entries above it. The
+        # tokens and applications screens are useless once the API is off; an
+        # audit log is not -- switching the API off is exactly when somebody
+        # wants to read what it did while it was on.
+        menu.push :api_audit_events,
+                  {:controller => 'api_audit_events', :action => 'index'},
+                  :caption => :label_api_audit_event_plural,
+                  :icon => 'list',
+                  :html => {:class => 'icon icon-list'}
         menu.push :plugins, {:controller => 'admin', :action => 'plugins'},
                   :last => true,
                   :icon => 'plugins',

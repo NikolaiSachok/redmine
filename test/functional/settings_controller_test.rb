@@ -73,6 +73,40 @@ class SettingsControllerTest < Redmine::ControllerTest
     end
   end
 
+  # AUDIT-R3 / AUDIT-R4. The two audit settings live on the same tab.
+  def test_get_edit_api_tab_should_offer_the_audit_log_settings
+    with_settings :rest_api_audit_level => 'all', :rest_api_audit_retention_days => '45' do
+      get :edit, :params => {:tab => 'api'}
+    end
+    assert_response :success
+
+    assert_select 'select[name=?]', 'settings[rest_api_audit_level]' do
+      ApiAuditEvent::LEVELS.each do |level|
+        assert_select 'option[value=?]', level
+      end
+      assert_select 'option[value=all][selected=selected]'
+    end
+    assert_select 'input[name=?][value=?]', 'settings[rest_api_audit_retention_days]', '45'
+  end
+
+  def test_post_edit_api_tab_should_store_the_audit_log_settings
+    post(
+      :edit,
+      :params => {
+        :tab => 'api',
+        :settings => {:rest_api_audit_level => 'off', :rest_api_audit_retention_days => '30'}
+      }
+    )
+    assert_redirected_to '/settings?tab=api'
+
+    assert_equal 'off', Setting.rest_api_audit_level
+    assert_equal 30, Setting.rest_api_audit_retention_days.to_i
+    assert_equal 30, ApiAuditEvent.retention_in_days
+  ensure
+    Setting.rest_api_audit_level = 'writes'
+    Setting.rest_api_audit_retention_days = 90
+  end
+
   def test_post_edit_api_tab_should_store_only_the_unchecked_endpoints
     post(
       :edit,

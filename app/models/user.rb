@@ -116,6 +116,10 @@ class User < Principal
   attr_writer   :oauth_scope
   attr_writer   :authenticated_by_personal_access_token
   attr_accessor :personal_access_token_scope
+  # Which token authenticated this request, by id. Ephemeral like the two
+  # above, and the id only: the value is not stored anywhere, not even hashed
+  # on the user.
+  attr_accessor :authenticating_personal_access_token_id
 
   LOGIN_LENGTH_LIMIT = 60
   MAIL_LENGTH_LIMIT = 254

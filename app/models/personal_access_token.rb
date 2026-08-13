@@ -222,6 +222,9 @@ class PersonalAccessToken < ApplicationRecord
       user = token.user
       user.authenticated_by_personal_access_token = true
       user.personal_access_token_scope = token.permissions
+      # By id, so the audit log can name the token without the log ever holding
+      # anything that could be replayed as one.
+      user.authenticating_personal_access_token_id = token.id
       user
     end
   end

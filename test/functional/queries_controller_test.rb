@@ -623,6 +623,53 @@ class QueriesControllerTest < Redmine::ControllerTest
     assert_redirected_to :controller => 'admin', :action => 'projects', :query_id => q.id
   end
 
+  # Query.get_subclass accepts any Query descendant, and redirect_to_items sends
+  # "redirect_to_#{class_name.underscore}". Without a partner method the row is
+  # saved and the response is a 500 -- reachable by any logged-in user, not only
+  # an administrator.
+  def test_create_api_audit_query_should_redirect_to_the_audit_log
+    @request.session[:user_id] = 1
+
+    q = new_record(ApiAuditQuery) do
+      post(
+        :create,
+        :params => {
+          :type => 'ApiAuditQuery',
+          :default_columns => '1',
+          :f => ['status'],
+          :op => {'status' => '='},
+          :v => {'status' => ['401']},
+          :query => {'name' => 'refused calls'}
+        }
+      )
+    end
+
+    assert_redirected_to :controller => 'api_audit_events', :action => 'index', :query_id => q.id
+  end
+
+  def test_create_api_audit_query_as_a_non_administrator_should_not_error
+    @request.session[:user_id] = 2
+
+    post(
+      :create,
+      :params => {
+        :type => 'ApiAuditQuery',
+        :default_columns => '1',
+        :f => ['status'],
+        :op => {'status' => '='},
+        :v => {'status' => ['401']},
+        :query => {'name' => 'refused calls'}
+      }
+    )
+
+    # Same shape as a non-administrator creating a UserQuery: the row is saved
+    # and the redirect lands on a screen that refuses them. What matters here is
+    # that it is a redirect rather than a 500.
+    assert_response :found
+    assert_redirected_to :controller => 'api_audit_events', :action => 'index',
+                         :query_id => ApiAuditQuery.order(:id).last.id
+  end
+
   def test_edit_global_public_query
     @request.session[:user_id] = 1
     get(:edit, :params => {:id => 4})

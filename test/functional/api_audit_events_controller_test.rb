@@ -40,6 +40,15 @@ class ApiAuditEventsControllerTest < Redmine::ControllerTest
     }.merge(attributes))
   end
 
+  def parsed_csv(body)
+    CSV.parse(body.sub("\xEF\xBB\xBF", '').force_encoding('UTF-8'))
+  end
+
+  def assert_no_formula_cell_in(body)
+    offenders = parsed_csv(body).flatten.compact.grep(/\A[=+\-@\t\r]/)
+    assert_equal [], offenders, "these exported cells would be evaluated as spreadsheet formulas"
+  end
+
   def test_index_should_list_recorded_events
     generate_event
     generate_event(:login => 'dlopper', :user_id => 3, :endpoint => 'issues#update', :http_method => 'PUT')
@@ -92,6 +101,34 @@ class ApiAuditEventsControllerTest < Redmine::ControllerTest
   def test_the_default_window_should_be_the_query_default_rather_than_a_view_accident
     assert_equal({'created_on' => {:operator => '>t-', :values => [ApiAuditQuery::DEFAULT_WINDOW_IN_DAYS.to_s]}},
                  ApiAuditQuery.new(:name => '_').filters)
+  end
+
+  # The 7-day window is a *default*, not a floor. An administrator who clears
+  # the filter set gets the whole table, and the session then keeps that choice
+  # exactly as it keeps any other filter set -- which is the behaviour of every
+  # other Query screen in Redmine and is what makes the log usable for an
+  # investigation older than a week. The cost is the COUNT(*) the window exists
+  # to avoid, and it is the administrator's to spend deliberately.
+  def test_an_emptied_filter_set_should_clear_the_default_window_and_be_remembered
+    generate_event(:created_on => 30.days.ago, :endpoint => 'issues#old')
+    generate_event(:endpoint => 'issues#recent')
+
+    get :index, :params => {:set_filter => 1, :f => ['']}
+
+    assert_response :success
+    assert_equal({}, @request.session[:api_audit_query][:filters])
+    assert_select 'table.list td', :text => 'issues#old'
+    assert_select 'table.list td', :text => 'issues#recent'
+
+    # No set_filter this time: the session query is what answers, and it must
+    # still be the emptied one rather than silently snapping back to 7 days.
+    # ApiAuditQuery#initialize applies the window with ||=, so an empty hash
+    # from the session survives it where a nil would not.
+    get :index
+
+    assert_response :success
+    assert_select 'table.list td', :text => 'issues#old'
+    assert_select 'table.list tbody tr', 2
   end
 
   def test_index_should_filter_by_login
@@ -200,6 +237,51 @@ class ApiAuditEventsControllerTest < Redmine::ControllerTest
     # the token is named, so an administrator can act on it, by name and never
     # by anything that could be replayed
     assert_include 'CI', response.body
+  end
+
+  # The attacker is any user who can create a personal access token; the victim
+  # is the administrator who opens the exported log in a spreadsheet. Token
+  # names are validated for presence, length and uniqueness and for no format
+  # at all, so the bytes are the attacker's choice. The HTML screen is safe
+  # because content_tag escapes it; only the CSV was raw.
+  def test_audit_005_a_token_name_should_not_inject_a_csv_formula
+    token = PersonalAccessToken.create!(:user => User.find(2), :name => "=cmd|'/C calc'!A0")
+    generate_event(:credential_type => ApiAuditEvent::CREDENTIAL_PERSONAL_ACCESS_TOKEN,
+                   :personal_access_token_id => token.id,
+                   :login => '@SUM(1+1)*cmd')
+
+    get :index, :params => {:format => 'csv', :set_filter => 1,
+                            :c => ['login', 'personal_access_token']}
+
+    assert_response :success
+    assert_include "'=cmd|'/C calc'!A0", response.body
+    assert_include "'@SUM(1+1)*cmd", response.body
+    assert_no_formula_cell_in response.body
+  end
+
+  def test_audit_005_the_export_should_neutralise_every_formula_prefix
+    %w(= + - @).each_with_index do |prefix, i|
+      generate_event(:login => "#{prefix}HYPERLINK(\"http://evil\")", :endpoint => "issues#a#{i}")
+    end
+
+    get :index, :params => {:format => 'csv', :set_filter => 1, :c => ['login', 'endpoint']}
+
+    assert_response :success
+    assert_no_formula_cell_in response.body
+    assert_equal 5, response.body.split("\n").size
+  end
+
+  # A cell that never began a formula must come out byte for byte as it went in:
+  # a neutraliser that rewrites ordinary values would make the export unusable
+  # as evidence.
+  def test_audit_005_an_ordinary_cell_should_not_be_rewritten
+    generate_event(:login => 'jsmith')
+
+    get :index, :params => {:format => 'csv', :set_filter => 1, :c => ['login', 'endpoint', 'status']}
+
+    assert_response :success
+    row = parsed_csv(response.body).last
+    assert_equal ['jsmith', 'issues#create', '201'], row
   end
 
   def test_index_should_show_a_revoked_token_by_id_rather_than_raise

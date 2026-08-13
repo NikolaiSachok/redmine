@@ -184,6 +184,15 @@ class QueriesController < ApplicationController
     redirect_to users_path(options)
   end
 
+  # Every Query subclass needs its partner here: redirect_to_items builds this
+  # method name from the class name and sends it, and Query.get_subclass accepts
+  # any descendant, so a subclass without one answers 500 after having saved the
+  # row. Reading the resulting screen is still administrators only --
+  # ApiAuditEventsController requires it, as does ApiAuditQuery#visible?.
+  def redirect_to_api_audit_query(options)
+    redirect_to api_audit_events_path(options)
+  end
+
   def query_layout
     @query&.layout || 'base'
   end

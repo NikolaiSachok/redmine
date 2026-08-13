@@ -26,6 +26,17 @@ work each have their own section below. Two pre-existing weaknesses found while 
 and #12; #11 is now fixed, because the red team showed this feature makes it reachable with a new
 credential, and #12 stays open because closing it fully belongs to the OAuth path, not to this slice.
 
+**Known and not fixed**, so that the issue board and this file agree. Issue **#34**: a read-only
+scoped token belonging to an administrator makes `User#admin?` false, so `X-Redmine-Switch-User` is
+never evaluated — the request runs as the administrator themselves and the impersonation *attempt* is
+recorded nowhere. It is not a privilege escalation, it is a silence, and closing it needs a product
+decision about whether a scoped token may impersonate at all; that decision was not taken, so the
+defect is documented rather than guessed at. Issue **#37**: one administrator's *private* saved query
+is listed to every other administrator, inherited from `Query` and identical on Redmine's own
+`UserQuery` screens; changing it would alter shared upstream behaviour, so it is filed as
+`pre-existing` and left alone. Issues #1–#4 are the core work and remain open only because the pull
+request that implements them is deliberately never merged.
+
 ## The problem, reproduced
 
 Before writing anything, the current behaviour was demonstrated on this checkout rather than taken
@@ -154,6 +165,17 @@ Naming these is part of the deliverable, so none of them are buried:
   the API-key sidebar block the new link sits beside — **is** verified, just not locally. The block's
   markup was left byte-for-byte untouched regardless, and a functional test now pins the same
   selectors as a runnable proxy.
+- **The JavaScript this branch adds is unverified by behaviour.** One handler exists — the scope
+  radios on the token form expand the permissions fieldset — and with no browser here its test can
+  only assert that the wiring is present and addresses the elements actually rendered. It is worth
+  naming precisely because the server-side half of that same fix shipped first and was found to be
+  only half a fix; the same class of gap could hide a second time. `toggleFieldset`, `checkAll`, the
+  `data-confirm` dialogs, the CSV export modal and the copy-to-clipboard button are all in the same
+  position: markup-verified, behaviour unverified locally.
+- **`require_sudo_mode` is unverified locally.** Sudo mode is switched off in the development
+  container, and turning it on means editing `config/configuration.yml`, which is shared with the
+  instance a human is using. The three state-changing token actions declare it and the declaration
+  was read in source; that it *prompts* has not been observed here.
 
 ### Administration
 
@@ -189,6 +211,51 @@ The defences that held are recorded too, because that inventory is what makes th
 name output is escaped at every sink, strong parameters reject injected `user_id`/`token_digest`,
 cross-user revoke is scoped to the caller, every unintended transport is refused, CSRF is enforced,
 and enumeration is infeasible against a 16^40 keyspace.
+
+### What a user-interface pass changed
+
+The red team asks whether a screen can be *abused*. It never asks whether a screen can be *reached*,
+and that turned out to be the larger gap: a human opened the audit log and found, in minutes, two
+defects that four automated gates had passed. So a second adversarial agent was written —
+`ui-verifier`, with its own ledger at `notes/UI-CHECKS.md`, shipped with this repository.
+
+It checks three properties for every affordance the branch adds: **reachable** by the users entitled
+to it, **wired** to a route that does what the control implies, and **honest** in what its labels,
+flashes and confirmations claim. Four design choices in it are worth stating, because each rejects
+the more obvious alternative:
+
+- **The inventory is derived from the diff, never handed over.** The agent is told a commit range and
+  nothing else. A list of screens to check can only contain what somebody already thought of.
+- **Create-then-find, not route reachability.** The obvious design — "every new route must be linked
+  from somewhere" — *passes this branch*: `/api_audit_events` is linked from the administration menu,
+  and the unreachable thing was a saved *query*. So the agent performs each create affordance and
+  re-crawls, requiring the artifact to be discoverable afterwards. That round trip is what caught it.
+- **Persona × surface × setting state, with four probes each.** Rendered-for-entitled,
+  hidden-from-unentitled, **enforced**-against-unentitled, and enforced-across-ownership. The third
+  matters most: hiding a link is not authorization, so every discovered URL is re-requested as every
+  other persona. Ownership is a separate axis from role — two non-admin users, because a role-only
+  matrix passes "A must not see B's token" trivially.
+- **No allowlist.** Deliberate asymmetries are reported with their in-code evidence and marked
+  `intentional?` for a human to rule on once. A suppression list rots silently and turns a verifier
+  into a rubber stamp.
+
+Across two blind runs it found thirteen defects. The first run caught both of the human's findings
+plus five nobody had seen, including an administration screen that stayed reachable by URL while its
+link was hidden — and, by measuring the precedent a decision log *cited*, proved that decision's
+justification false: the entry claimed the open route was inherited from Redmine's OAuth screens, and
+those screens return 403 on the same setting. That reversed the fix.
+
+The second run, against the fixed branch, is the one that earned the exercise. Three of its five
+findings were consequences of the first round's fixes — a scope fix that was server-side only, an
+administration screen left silent about the state it was deliberately kept open for, and **a
+regression test of mine whose assertion could not fail**, one commit after criticising exactly that
+pattern in somebody else's test. A fix is a new surface, and re-running the verifier against fixed
+code is what surfaces that.
+
+What it cannot see is stated in its own ledger and repeated here: there is no browser in this
+container, so anything JavaScript-only is verified by the presence of its wiring and not by its
+behaviour; `require_sudo_mode` could not be exercised because sudo mode is off in the development
+container; and visual layout, accessibility and non-English locales were not judged at all.
 
 ### Why the query parameter is refused
 
@@ -874,29 +941,39 @@ re-run on an existing checkout before the server will boot.
 **CI status.** Redmine's own `Tests` workflow is green on this branch — all nine cells of its matrix
 (SQLite, PostgreSQL, MySQL × Ruby 3.2, 3.3, 3.4) plus the Chrome system-test job. The `Lint` workflow
 is **red for a pre-existing reason unrelated to this branch**: its `bundle-audit` job reports
-advisories against Rails 7.2.3, the version the `6.1.2` tag pins, and this branch does not touch the
-`Gemfile`. The `rubocop` and `stylelint` jobs in that workflow pass.
+advisories against Rails 7.2.3, the version the `6.1.2` tag pins in `Gemfile:5` as an exact version
+rather than a pessimistic constraint, so bundler cannot resolve the patch release the advisories ask
+for. `Gemfile.lock` is gitignored here, so CI resolves dependencies fresh every run and still gets
+7.2.3 — the pin blocks the fix, not a stale lockfile. The advisories are CVE-2026-33169
+(ReDoS in `number_to_delimited`), CVE-2026-33170 (XSS in `SafeBuffer#%`) and CVE-2026-33176 (DoS in
+the number helpers), all resolved by `>= 7.2.3.1`, against `activesupport`, `actionview` and
+`activestorage`. This branch does not touch the `Gemfile` — `git diff base-6.1.2..HEAD -- Gemfile` is
+empty — so the job was red before the branch existed. The `rubocop` and `stylelint` jobs pass.
 
 Full suite, run on this checkout:
 
 | | runs | assertions | failures | errors | skips |
 |---|---|---|---|---|---|
 | Before any change (tag `6.1.2`) | 5479 | 24753 | 0 | 0 | 44 |
-| After the personal-access-token work | 5528 | 24901 | 0 | 0 | 44 |
+| Current | 5797 | 26000 | 0 | 0 | 44 |
 
-The CORS work landed after that measurement and adds 48 tests (12 in `test/unit/lib/redmine/cors_test.rb`,
-30 in `test/integration/api_test/cors_test.rb`, 5 in `test/integration/routing/cors_test.rb`, 1 in
-`test/functional/settings_controller_test.rb`).
-Those files, `test/integration/api_test/`, `test/integration/routing/`,
-`test/functional/my_controller_test.rb` and `test/functional/settings_controller_test.rb` were run and
-are green; the full-suite row is re-measured rather than extrapolated, so it is not restated here.
+The difference is the 318 tests this branch adds, across the core, scopes, CORS, endpoint control,
+audit logging and the two rounds of UI fixes; nothing existing changed state. Per-feature arithmetic
+is deliberately not restated here, because every earlier version of this paragraph went stale within
+a day and a stale measurement presented as current is the same defect as an unmeasured claim.
 
-The difference is exactly the 49 tests added here — 18 in `personal_access_token_test.rb`, 18 in
-`personal_access_token_auth_test.rb`, 13 in `my_controller_test.rb` — and nothing existing changed
-state. Note that a run performed while another agent was working the same checkout produced one
-spurious `SQLite3::BusyException`; under concurrency SQLite failures look exactly like real ones, so
-re-run the file alone before believing them. `test/system/` is
-excluded from `bin/rails test` and was not run locally (see limits).
+Two honest notes about that row. **Run counts reconcile; assertion counts do not** — repeated runs of
+the identical tree produced 25994, 25996 and 26000 assertions against a stable 5797 runs, so only the
+run count is used as evidence here. And **one full-suite run out of five failed once**, in a single
+test whose identity was not captured; four subsequent full runs were green and the touched files
+passed twelve consecutive randomised runs, so it could not be reproduced. It is recorded rather than
+rounded away: "it passes now" is not the same as "it was a fluke", and CI runs the suite on every
+push with full logs, which is where it would surface with a name attached.
+
+A run performed while another agent was working the same checkout produced one spurious
+`SQLite3::BusyException`; under concurrency SQLite failures look exactly like real ones, so re-run the
+file alone before believing them. `test/system/` is excluded from `bin/rails test` and was not run
+locally (see limits).
 
 ### End to end, against a running server
 
@@ -1116,5 +1193,33 @@ blast radius. Their reports — `CODE-MAP-auth.md`, `CODE-MAP-ui.md`, `CODE-MAP-
 the shared value guard, the `varchar(40)` ceiling, and which existing tests would have broken had the
 `api_token` association been pluralised.
 
+Beyond that, the work was run through a **verification gate** rather than a review pass, because a
+green suite proved repeatedly to be no evidence at all. Five axes, none of which subsumes another:
+
+| axis | asks | agent | artifact |
+|---|---|---|---|
+| completeness | is anything *missing*, measured against the ticket and the brief rather than against the issues | `completeness-reviewer` | `notes/REQUIREMENTS.md` |
+| blast radius | what *existing* behaviour can break, and is it pinned by a test | `blast-radius-reviewer` | — |
+| correctness | is the diff right | `/code-review` | — |
+| adversarial | can it be abused on a running server | `redteam` | `notes/ATTACKS.md` |
+| interface | can the right people *reach* it, and does it tell the truth | `ui-verifier` | `notes/UI-CHECKS.md` |
+
+Agent definitions live in `~/.claude/agents/` and ship with the transcripts. Two of the ledgers are
+living documents that regress their own past findings on every run, which is what makes a second run
+worth more than the first.
+
+The gate found, across the six features, defects that the suite could not: an authentication
+regression, a privilege escalation *and* the bypass of its own fix, a cleartext credential in the log,
+a fail-open default granting full access, a cross-origin containment failure, a CSV formula injection,
+a 500 in a file the diff never touched, thirteen interface defects, and several claims contradicted by
+their own behaviour — including two in `notes/DECISIONS.md` itself.
+
+Scale and performance claims were measured rather than argued, on a seeded 200,000-row database:
+`notes/SCALE-AUDIT.md`. Two measurements in this repository had to be **retracted** after a
+controlled re-run — a 3.2× speedup that was an artifact of a degrading environment, and a −2.1% index
+write cost that is thermodynamically impossible and came from an uncontrolled before/after
+comparison. Both retractions are recorded where the claims were made.
+
 `notes/DECISIONS.md` is the running log of every non-obvious decision, written as the work happened,
-and is the source this README was condensed from.
+and is the source this README was condensed from. `notes/LOOP-LOG.md` records an overnight autonomous
+run of four features, marking exactly which three points needed a human.

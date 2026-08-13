@@ -4,6 +4,17 @@
 decided and against what alternative, how the AI development workflow started and what it became,
 and why a task calibrated at two hours ran to twenty.
 
+**Candidate:** Nikolai Sachok — Staff Product Engineer, TaxDome technical challenge.
+**Code:** `github.com/NikolaiSachok/redmine`, pull request **#13**,
+`feat/personal-access-tokens` → `base-6.1.2`, open and unmerged as the brief requires.
+
+**One thing about layout, because this file may reach you on its own.** The deliverable is three
+things side by side, not one: the **git repository** (`README.md` and the code), the **`notes/`
+directory**, and the **unedited Claude Code transcripts**. Every `notes/…` path below refers to that
+sibling directory — it is deliberately *not* committed, so the pull request diff shows exactly the
+engineering slice and nothing else. Paths beginning `~/.claude/` are the agent definitions, which
+travel with the transcripts.
+
 ---
 
 ## Where everything is

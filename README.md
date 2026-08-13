@@ -198,8 +198,9 @@ see why rather than finding it silently gone.
 ### What an adversarial pass changed
 
 A red-team agent attacked a running instance rather than reading the diff, working from a ledger of
-attacks that it also extends — `notes/ATTACKS.md`, shipped with this repository. Ten hypotheses, two
-landed, and both were weaknesses this feature *introduces* rather than inherits:
+attacks that it also extends — `notes/ATTACKS.md`, which ships *beside* this repository rather than
+inside it (see `REVIEW.md`). Ten hypotheses, two landed, and both were weaknesses this feature
+*introduces* rather than inherits:
 
 - **A token could be traded up for the permanent API key.** `GET /my/account.json` returns the
   user's `api_key` unconditionally, so a credential that expires and can be revoked bought one that
@@ -221,7 +222,7 @@ and enumeration is infeasible against a 16^40 keyspace.
 The red team asks whether a screen can be *abused*. It never asks whether a screen can be *reached*,
 and that turned out to be the larger gap: a human opened the audit log and found, in minutes, two
 defects that four automated gates had passed. So a second adversarial agent was written —
-`ui-verifier`, with its own ledger at `notes/UI-CHECKS.md`, shipped with this repository.
+`ui-verifier`, with its own ledger at `notes/UI-CHECKS.md`, beside this repository rather than inside it.
 
 It checks three properties for every affordance the branch adds: **reachable** by the users entitled
 to it, **wired** to a route that does what the control implies, and **honest** in what its labels,

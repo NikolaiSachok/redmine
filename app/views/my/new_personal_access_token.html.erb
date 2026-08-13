@@ -91,6 +91,33 @@
 <p><%= submit_tag l(:button_create) %></p>
 <% end %>
 
+<%# Selecting Custom opens the permissions the choice is about. Without this the
+    server-side default above only opens the fieldset after a *rejected* submit,
+    so the first thing a user choosing Custom saw was an error naming a control
+    that was still hidden.
+
+    Bound here rather than in application-legacy.js because that file is
+    precompiled into a digested asset, and this behaviour belongs to one form.
+    toggleFieldset is reused rather than reimplemented so the legend class and
+    the sprite arrow stay consistent with every other collapsible fieldset; it
+    is called only when the current state differs from the wanted one, which
+    makes this idempotent and correct on a redisplayed form that is already
+    open. %>
+<%= javascript_tag do %>
+  $(function() {
+    var radios = $('input[name="personal_access_token[scope_preset]"]');
+    var sync = function() {
+      var fieldset = $('#personal-access-token-permissions');
+      var wantOpen = radios.filter(':checked').val() === '<%= PersonalAccessToken::SCOPE_PRESET_CUSTOM %>';
+      if (fieldset.hasClass('collapsed') === wantOpen) {
+        toggleFieldset(fieldset.children('legend')[0]);
+      }
+    };
+    radios.on('change', sync);
+    sync();
+  });
+<% end %>
+
 <% content_for :sidebar do %>
 <%= render :partial => 'my/sidebar' %>
 <% end %>

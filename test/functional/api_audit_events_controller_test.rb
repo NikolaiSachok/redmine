@@ -343,17 +343,44 @@ class ApiAuditEventsControllerTest < Redmine::ControllerTest
     assert_select '#sidebar a[href=?]', "/api_audit_events?query_id=#{query.id}", :text => 'Refused calls'
   end
 
-  # The other half of UI-004: the sidebar must not become a disclosure channel.
-  # ApiAuditQuery.visible is admin-only in both directions, and this pins that
-  # the view honours it rather than listing every saved query it can load.
-  def test_ui_004_the_sidebar_should_not_leak_another_users_saved_query
+  # Renamed and rewritten (UI-010). This previously claimed the sidebar does not
+  # leak one user's saved query to another, and proved nothing of the sort: it
+  # used a non-administrator, who is refused the whole screen, so the
+  # "no such link" assertion was vacuously true on an error page and would have
+  # passed whatever the sidebar did.
+  #
+  # What is actually true is narrower, and is what it now says: a
+  # non-administrator never reaches the screen, so the sidebar is unreachable
+  # rather than filtered.
+  #
+  # The wider property does NOT hold. An administrator's private ApiAuditQuery
+  # *is* listed to every other administrator, because Query treats admin? as
+  # seeing everything and ApiAuditQuery.visible is byte-identical to
+  # UserQuery.visible. That is inherited Redmine behaviour on shared code,
+  # filed separately as pre-existing rather than silently implied to be fixed.
+  def test_ui_004_the_sidebar_is_unreachable_to_a_non_administrator
     ApiAuditQuery.create!(:name => 'Admin only', :user_id => 1, :visibility => Query::VISIBILITY_PRIVATE)
     @request.session[:user_id] = 2
 
     get :index
 
     assert_response :forbidden
-    assert_select 'a', {:text => 'Admin only', :count => 0}
+  end
+
+  # The behaviour the old name claimed, stated as a test so it is measured
+  # rather than assumed -- in whichever direction it goes. If Redmine ever
+  # narrows admin visibility, this fails and the pre-existing issue can be
+  # closed; today it documents the exposure on the one screen where one
+  # administrator watching another is a real use case.
+  def test_a_second_administrator_sees_the_first_administrators_private_query
+    second_admin = User.generate!(:admin => true)
+    ApiAuditQuery.create!(:name => 'Admin only', :user_id => second_admin.id,
+                          :visibility => Query::VISIBILITY_PRIVATE)
+
+    get :index
+
+    assert_response :success
+    assert_select '#sidebar a', :text => 'Admin only'
   end
 
   # UI-005. A regular user could reach the form and save a query, then be

@@ -19,11 +19,11 @@
   </thead>
   <tbody>
     <% @personal_access_tokens.each do |token| %>
-    <tr id="personal-access-token-<%= token.id %>" class="<%= cycle('odd', 'even') %>">
+    <tr id="personal-access-token-<%= token.id %>" class="<%= cycle('odd', 'even') %> <%= personal_access_token_row_class(token) %>">
       <td class="name"><span><%= token.name %></span></td>
       <td class="scope" title="<%= personal_access_token_scope_title(token) %>"><%= personal_access_token_scope_label(token) %></td>
       <td><%= format_time(token.created_at) %></td>
-      <td><%= token.expires_on ? format_date(token.expires_on) : l(:label_expiration_none) %></td>
+      <td class="expires-on"><%= personal_access_token_expiry_label(token) %></td>
       <td><%= token.last_used_on ? format_time(token.last_used_on) : l(:label_personal_access_token_never_used) %></td>
       <td class="buttons"><%= delete_link my_personal_access_token_path(token) %></td>
     </tr>

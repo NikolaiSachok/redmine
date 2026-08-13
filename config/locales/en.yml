@@ -1070,8 +1070,11 @@ en:
   label_api_audit_level_off: 'Off'
   label_api_audit_level_writes: Writes and refused requests
   label_api_audit_level_all: Every API request
-  label_expiration_x_days: "%{count} days"
+  label_expiration_x_days:
+    one: 1 day
+    other: "%{count} days"
   label_expiration_none: No expiration
+  label_personal_access_token_expired: expired
   label_profile: Profile
   label_subtask: Subtask
   label_subtask_plural: Subtasks
@@ -1325,7 +1328,10 @@ en:
   text_personal_access_token_scope_custom: The token is limited to the permissions selected below.
   text_personal_access_token_scope_narrows_only: A scope can only narrow. A token never gains a permission its owner does not have, and a token restricted to a scope cannot change its owner's account.
   text_personal_access_token_max_lifetime: Maximum number of days a personal access token may be valid for. 0 means no limit, and lets users create tokens that never expire.
-  text_personal_access_token_expiry_required: "Your administrator requires tokens to expire within %{count} days, so this token cannot be created without an expiry date."
+  text_personal_access_token_expiry_required:
+    one: "Your administrator requires tokens to expire within 1 day, so this token cannot be created without an expiry date."
+    other: "Your administrator requires tokens to expire within %{count} days, so this token cannot be created without an expiry date."
+  text_personal_access_tokens_api_disabled: The REST API is switched off, so none of the tokens below can authenticate a request. They still exist and will work again if it is switched back on, which is why they can still be revoked here.
   text_rest_api_cors_origins: Comma-separated list of origins that may call the REST API from a browser, for example https://app.example.com, https://staging.example.com:8443. Scheme, host and port must match exactly. Leave empty to allow none. Requests are never authenticated by cookie across origins, so callers must send an API key or a personal access token.
   text_rest_api_disabled_endpoints: Unchecked endpoints refuse REST API requests with 403, whichever credential is used. HTML pages are not affected, but a .json or .xml request is refused even when it comes from a logged-in browser session, and Atom feeds are a separate path this does not cover. Endpoints that are not listed here, including those added by plugins, stay available.
   text_rest_api_audit_level: What the API audit log records. "Writes and refused requests" records every call that changes something plus every call refused with 401, 403 or 412, which is what an audit trail is for without recording the polling reads that are most of an instance's API traffic. "Every API request" is far larger and should be turned on deliberately.

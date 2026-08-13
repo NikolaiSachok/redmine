@@ -934,6 +934,56 @@ class MyControllerTest < Redmine::ControllerTest
     assert_select 'fieldset#personal-access-token-permissions.collapsed'
   end
 
+  # UI-009. The fix for UI-003 was server-side only: the fieldset opened after a
+  # rejected submit, and selecting Custom on a fresh form still revealed
+  # nothing, because nothing was bound to the radios.
+  #
+  # There is no browser in this container, so this asserts the wiring exists and
+  # points at the right elements -- that the handler *works* is not verified
+  # here, and cannot be until test/system/ can run.
+  def test_ui_009_the_scope_radios_should_be_wired_to_the_permissions_fieldset
+    get :new_personal_access_token
+
+    assert_response :success
+    script = css_select('script').map(&:text).join("\n")
+    assert_include 'personal_access_token[scope_preset]', script
+    assert_include 'personal-access-token-permissions', script
+    assert_include "'custom'", script,
+                   'the handler must compare against the custom preset value the model defines'
+    # the elements the handler addresses have to be the ones actually rendered
+    assert_select 'fieldset#personal-access-token-permissions > legend'
+    assert_select 'input[name=?][value=?]', 'personal_access_token[scope_preset]', 'custom'
+  end
+
+  # UI-012. A one or two day ceiling is a legitimate configuration --
+  # offered_lifetimes_in_days returns [max] when max < 30 -- and rendered
+  # "1 days" in two places, both strings new on this branch.
+  def test_ui_012_a_one_day_ceiling_should_not_render_as_one_days
+    with_settings :personal_access_token_max_lifetime_days => '1' do
+      get :new_personal_access_token
+
+      assert_response :success
+      assert_not_include '1 days', response.body
+      assert_select 'option', :text => '1 day'
+      assert_select 'em.info', :text => /within 1 day,/
+    end
+  end
+
+  # UI-013. The model keeps expired tokens so their owner can see why one
+  # stopped working; the screen printed the date and never the consequence.
+  def test_ui_013_an_expired_token_should_be_marked_as_expired
+    live = PersonalAccessToken.create!(:user => User.find(2), :name => 'live')
+    expired = PersonalAccessToken.create!(:user => User.find(2), :name => 'stale')
+    expired.update_column(:expires_on, Date.today - 1)
+
+    get :personal_access_tokens
+
+    assert_response :success
+    assert_select "tr#personal-access-token-#{expired.id}.expired td.expires-on span.expired",
+                  :text => /expired/
+    assert_select "tr#personal-access-token-#{live.id}.expired", 0
+  end
+
   # UI-006. The hint under Expires reused the administrator's settings string,
   # which describes a control the user cannot see and offers an option this
   # select does not contain.

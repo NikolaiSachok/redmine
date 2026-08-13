@@ -155,6 +155,41 @@ class PersonalAccessTokensControllerTest < Redmine::ControllerTest
     end
   end
 
+  # UI-011. The screen is deliberately kept open while the API is off (UI-002),
+  # and then said nothing about the state it was being used in: every token
+  # listed looked live when none of them could authenticate anything.
+  def test_ui_011_the_screen_should_say_when_the_rest_api_is_off
+    PersonalAccessToken.create!(:user => User.find(2), :name => 'live-token')
+
+    with_settings :rest_api_enabled => '0' do
+      get :index
+
+      assert_response :success
+      assert_select 'p.warning'
+      # and it must still list and offer to revoke them, which is why it is open
+      assert_select 'table.list td', :text => 'live-token'
+    end
+
+    with_settings :rest_api_enabled => '1' do
+      get :index
+
+      assert_response :success
+      assert_select 'p.warning', 0
+    end
+  end
+
+  # UI-013 on the administration side. The same state must read the same way on
+  # both screens; only the user's screen was asserted when the helper was added.
+  def test_ui_013_an_expired_token_should_be_marked_on_the_admin_screen
+    expired = PersonalAccessToken.create!(:user => User.find(2), :name => 'stale')
+    expired.update_column(:expires_on, Date.today - 1)
+
+    get :index
+
+    assert_response :success
+    assert_select "tr#personal-access-token-#{expired.id}.expired td.expires-on span.expired"
+  end
+
   # The navigation half of UI-002: reachable means linked, not merely served.
   def test_ui_002_the_admin_menu_entry_should_survive_the_api_being_switched_off
     with_settings :rest_api_enabled => '0' do

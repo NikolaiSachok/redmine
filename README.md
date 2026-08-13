@@ -7,9 +7,11 @@ only as a digest, revocable from My account.
 It is a deliberately small slice of a large ticket, branched from tag `6.1.2`. Redmine's own
 `README.rdoc` is unchanged and still describes the product; this file describes the change.
 
-> **Reviewers: start with [`REVIEW.md`](REVIEW.md).** This file documents *the feature*. That one
-> documents *the work* — the trajectory, the decisions and what they cost, how the AI development
-> workflow began and what it became, and why a task calibrated at two hours ran to twenty.
+> **Reviewers: read `REVIEW.md` first.** It is not in this repository — it ships beside it, with
+> `notes/` and the transcripts, so this diff stays exactly the engineering slice. This file documents
+> *the feature*; that one documents *the work* — the trajectory, the decisions and what they cost,
+> how the AI development workflow began and what it became, and why a task calibrated at two hours
+> ran to twenty.
 
 ---
 
@@ -199,8 +201,8 @@ see why rather than finding it silently gone.
 
 A red-team agent attacked a running instance rather than reading the diff, working from a ledger of
 attacks that it also extends — `notes/ATTACKS.md`, which ships *beside* this repository rather than
-inside it (see `REVIEW.md`). Ten hypotheses, two landed, and both were weaknesses this feature
-*introduces* rather than inherits:
+inside it. Ten hypotheses, two landed, and both were weaknesses this feature *introduces* rather
+than inherits:
 
 - **A token could be traded up for the permanent API key.** `GET /my/account.json` returns the
   user's `api_key` unconditionally, so a credential that expires and can be revoked bought one that

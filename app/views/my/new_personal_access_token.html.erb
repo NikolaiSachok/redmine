@@ -13,7 +13,13 @@
                    (PersonalAccessToken.expiry_required? ? [] : [[l(:label_expiration_none), '']]),
                  :label => :field_expires_on %>
     <em class="info">
-      <%= PersonalAccessToken.expiry_required? ? l(:text_personal_access_token_max_lifetime) : l(:text_personal_access_token_no_expiration) %>
+      <%# The user's string, not the administrator's. This used to reuse
+          text_personal_access_token_max_lifetime, which is written for the
+          settings screen and describes a control this user cannot see and an
+          option this select does not offer. %>
+      <%= PersonalAccessToken.expiry_required? ?
+            l(:text_personal_access_token_expiry_required, :count => PersonalAccessToken.max_lifetime_in_days) :
+            l(:text_personal_access_token_no_expiration) %>
     </em>
   </p>
 </div>
@@ -39,12 +45,19 @@
   </p>
   <em class="info"><%= l(:text_personal_access_token_scope_narrows_only) %></em>
 
-  <fieldset class="collapsible collapsed" id="personal-access-token-permissions">
-    <legend onclick="toggleFieldset(this);" class="icon icon-collapsed">
-      <%= sprite_icon("angle-right", rtl: true) %>
+  <%# Open when the permissions are what the form is asking about: the custom
+      preset is selected, or the record came back rejected for having none.
+      Otherwise "Permissions cannot be blank" names a control that is not on
+      screen, which is the first thing anyone choosing a custom scope met.
+      Same shape as queries/_query_form.html.erb, which does this for filters. %>
+  <% permissions_expanded = @personal_access_token.errors[:permissions].any? ||
+                            @personal_access_token.scope_preset == PersonalAccessToken::SCOPE_PRESET_CUSTOM %>
+  <fieldset class="collapsible <%= 'collapsed' unless permissions_expanded %>" id="personal-access-token-permissions">
+    <legend onclick="toggleFieldset(this);" class="icon icon-<%= permissions_expanded ? 'expanded' : 'collapsed' %>">
+      <%= sprite_icon(permissions_expanded ? "angle-down" : "angle-right", rtl: !permissions_expanded) %>
       <%= l(:label_permissions) %>
     </legend>
-    <div class="hidden">
+    <div class="<%= 'hidden' unless permissions_expanded %>">
       <% if User.current.admin? %>
       <fieldset id="scope_module_administration">
         <legend><%= l(:label_administration) %></legend>

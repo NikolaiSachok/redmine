@@ -662,12 +662,50 @@ class QueriesControllerTest < Redmine::ControllerTest
       }
     )
 
-    # Same shape as a non-administrator creating a UserQuery: the row is saved
-    # and the redirect lands on a screen that refuses them. What matters here is
-    # that it is a redirect rather than a 500.
-    assert_response :found
-    assert_redirected_to :controller => 'api_audit_events', :action => 'index',
-                         :query_id => ApiAuditQuery.order(:id).last.id
+    # Superseded (UI-005). This used to assert the row was saved and the
+    # redirect landed on a screen that then refused them -- which left a query
+    # in the table that its author could neither see nor delete, because
+    # ApiAuditQuery is admin-only in both visible and editable_by?. The original
+    # test only checked it was not a 500, which is why the consequence went
+    # unnoticed.
+    #
+    # ApiAuditQuery is now admin-only in the third direction too. The permissive
+    # default on Query.creatable_by? means UserQuery and the rest are unchanged;
+    # whether they have the same shape of problem is pre-existing Redmine
+    # behaviour and deliberately not touched here.
+    assert_response :forbidden
+  end
+
+  def test_create_api_audit_query_as_a_non_administrator_should_not_save_a_row
+    @request.session[:user_id] = 2
+
+    assert_no_difference 'ApiAuditQuery.count' do
+      post(
+        :create,
+        :params => {
+          :type => 'ApiAuditQuery',
+          :default_columns => '1',
+          :query => {'name' => 'refused calls'}
+        }
+      )
+    end
+    assert_response :forbidden
+  end
+
+  def test_new_api_audit_query_should_be_refused_to_a_non_administrator
+    @request.session[:user_id] = 2
+
+    get(:new, :params => {:type => 'ApiAuditQuery'})
+
+    assert_response :forbidden
+  end
+
+  def test_new_api_audit_query_should_be_offered_to_an_administrator
+    @request.session[:user_id] = 1
+
+    get(:new, :params => {:type => 'ApiAuditQuery'})
+
+    assert_response :success
   end
 
   def test_edit_global_public_query

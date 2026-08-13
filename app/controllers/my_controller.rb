@@ -202,7 +202,11 @@ class MyController < ApplicationController
     return render_404 if token.nil?
 
     token.destroy
-    flash[:notice] = l(:notice_personal_access_token_revoked)
+    # Names the token: this list can hold several, so a bare confirmation leaves
+    # the user unsure which one they just revoked. The name is user-supplied and
+    # has no format validation, and the flash is rendered html_safe, so it is
+    # escaped here -- the same trap the administration screen walked into.
+    flash[:notice] = l(:notice_personal_access_token_revoked, :name => ERB::Util.h(token.name))
     redirect_to my_personal_access_tokens_path
   end
 

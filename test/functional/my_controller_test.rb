@@ -906,6 +906,61 @@ class MyControllerTest < Redmine::ControllerTest
     end
   end
 
+  # UI-003. The error named a control that was not on screen: the permission
+  # checkboxes are in a collapsed fieldset, and nothing expanded it when the
+  # record came back rejected for having none. Every user choosing a custom
+  # scope met this on their first attempt.
+  def test_ui_003_a_rejected_custom_scope_should_show_the_permissions_it_is_asking_for
+    assert_no_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token,
+           :params => {:personal_access_token => {:name => 'custom', :scope_preset => 'custom'}}
+    end
+
+    assert_response :success
+    assert_select '#errorExplanation'
+    assert_select 'fieldset#personal-access-token-permissions' do
+      assert_select 'legend.icon-expanded'
+    end
+    assert_select 'fieldset#personal-access-token-permissions.collapsed', 0
+    assert_select 'fieldset#personal-access-token-permissions div.hidden', 0
+  end
+
+  # The complement: the fieldset stays out of the way on a first visit, which is
+  # the reason it was collapsed in the first place.
+  def test_ui_003_the_permissions_fieldset_should_stay_collapsed_on_a_fresh_form
+    get :new_personal_access_token
+
+    assert_response :success
+    assert_select 'fieldset#personal-access-token-permissions.collapsed'
+  end
+
+  # UI-006. The hint under Expires reused the administrator's settings string,
+  # which describes a control the user cannot see and offers an option this
+  # select does not contain.
+  def test_ui_006_the_expiry_hint_should_be_written_for_the_user_not_the_administrator
+    with_settings :personal_access_token_max_lifetime_days => '90' do
+      get :new_personal_access_token
+
+      assert_response :success
+      assert_select 'em.info', :text => /requires tokens to expire within 90 days/
+      assert_select 'em.info', {:text => /0 means no limit/, :count => 0}
+    end
+  end
+
+  # UI-008. The list can hold several tokens, so a bare confirmation leaves the
+  # user unsure which one went. Names have no format validation and the flash is
+  # rendered html_safe, so the escaping half is pinned with the naming half --
+  # the administration screen walked into exactly this trap.
+  def test_ui_008_the_revoke_flash_should_name_the_token_and_escape_it
+    token = PersonalAccessToken.create!(:user => User.find(2), :name => '<b>pwn</b>')
+
+    delete :revoke_personal_access_token, :params => {:id => token.id}
+
+    assert_redirected_to '/my/personal_access_tokens'
+    assert_include '&lt;b&gt;pwn&lt;/b&gt;', flash[:notice]
+    assert_not_include '<b>pwn</b>', flash[:notice]
+  end
+
   def test_new_personal_access_token_should_default_to_thirty_days
     get :new_personal_access_token
 

@@ -356,6 +356,16 @@ class ApiAuditEventsControllerTest < Redmine::ControllerTest
     assert_select 'a', {:text => 'Admin only', :count => 0}
   end
 
+  # UI-005. A regular user could reach the form and save a query, then be
+  # redirected to a screen that answers 403 -- leaving a row they could neither
+  # see nor delete. Admin-only in all three directions now, not two.
+  def test_ui_005_a_non_administrator_should_not_be_able_to_create_an_audit_query
+    assert_not ApiAuditQuery.creatable_by?(User.find(2))
+    assert ApiAuditQuery.creatable_by?(User.find(1))
+    # the permissive default is unchanged for every other kind of query
+    assert IssueQuery.creatable_by?(User.find(2))
+  end
+
   # UI-007. The heading already showed the query name; the browser title did not.
   def test_ui_007_the_page_title_should_name_the_loaded_query
     query = ApiAuditQuery.create!(:name => 'Refused calls', :user_id => 1, :visibility => Query::VISIBILITY_PRIVATE)

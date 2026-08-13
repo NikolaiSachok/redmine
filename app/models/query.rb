@@ -535,6 +535,16 @@ class Query < ApplicationRecord
     errors.add(:base, m)
   end
 
+  # Whether this kind of query may be created at all by the given user.
+  #
+  # Separate from editable_by?, which judges an existing record: a subclass
+  # whose screen only administrators can read has nothing to offer anyone else,
+  # and letting them save one produces a row its own author can never see, edit
+  # or delete. Permissive by default so no existing query type changes.
+  def self.creatable_by?(user)
+    user.present?
+  end
+
   def editable_by?(user)
     return false unless user
 

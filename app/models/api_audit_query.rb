@@ -87,6 +87,15 @@ class ApiAuditQuery < Query
     add_available_filter 'ip', :type => :string, :label => :label_api_audit_ip
   end
 
+  # Admin-only in the third direction as well as the other two. Without this a
+  # regular user could save one: the form was reachable, the record saved, and
+  # the redirect landed on a 403 -- leaving a row in queries that its own author
+  # could neither see (visible returns none) nor delete (editable_by? is
+  # admin-only), and only an administrator could clean up.
+  def self.creatable_by?(user)
+    user&.admin?
+  end
+
   def visible?(user=User.current)
     user&.admin?
   end

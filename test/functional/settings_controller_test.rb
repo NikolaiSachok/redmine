@@ -50,6 +50,67 @@ class SettingsControllerTest < Redmine::ControllerTest
     assert_select 'input[name=?][value=?]', 'settings[rest_api_cors_origins]', 'https://app.example.com'
   end
 
+  # EP-R7. The endpoint matrix follows the roles permission screen: one
+  # fieldset per controller, one checkbox per action, checked when enabled.
+  def test_get_edit_api_tab_should_list_the_api_endpoints_grouped_by_controller
+    with_settings :rest_api_disabled_endpoints => ['issues#create'] do
+      get :edit, :params => {:tab => 'api'}
+    end
+    assert_response :success
+
+    assert_select 'div#rest-api-endpoints' do
+      assert_select 'fieldset#api_endpoints_issues' do
+        assert_select 'input[type=checkbox][name=?][checked=checked]',
+                      'settings[rest_api_disabled_endpoints][issues#index]'
+        # unchecked means disabled, and the hidden companion is what carries
+        # the '1' that Setting.rest_api_disabled_endpoints_from_params keeps
+        assert_select 'input[type=checkbox][name=?][checked=checked]',
+                      'settings[rest_api_disabled_endpoints][issues#create]', 0
+        assert_select 'input[type=hidden][name=?][value=1]',
+                      'settings[rest_api_disabled_endpoints][issues#create]'
+      end
+      assert_select 'fieldset#api_endpoints_my'
+    end
+  end
+
+  def test_post_edit_api_tab_should_store_only_the_unchecked_endpoints
+    post(
+      :edit,
+      :params => {
+        :tab => 'api',
+        :settings => {
+          :rest_api_disabled_endpoints => {
+            'issues#index' => '0',
+            'issues#create' => '1',
+            'my#account' => '1'
+          }
+        }
+      }
+    )
+    assert_redirected_to '/settings?tab=api'
+
+    assert_equal ['issues#create', 'my#account'], Setting.rest_api_disabled_endpoints
+  ensure
+    Setting.rest_api_disabled_endpoints = []
+  end
+
+  def test_post_edit_api_tab_should_ignore_an_endpoint_name_that_does_not_exist
+    post(
+      :edit,
+      :params => {
+        :tab => 'api',
+        :settings => {
+          :rest_api_disabled_endpoints => {'issues#create' => '1', 'Kernel#system' => '1'}
+        }
+      }
+    )
+    assert_redirected_to '/settings?tab=api'
+
+    assert_equal ['issues#create'], Setting.rest_api_disabled_endpoints
+  ensure
+    Setting.rest_api_disabled_endpoints = []
+  end
+
   def test_get_edit_should_preselect_default_issue_list_columns
     with_settings :issue_list_default_columns => %w(tracker subject status updated_on) do
       get :edit

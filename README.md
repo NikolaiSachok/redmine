@@ -398,6 +398,78 @@ authorisation; the real request that follows is authenticated exactly as before.
   gets no feedback that the value was rejected. Validating the field on save and reporting the rejected
   entries is the fix and is not done here.
 
+## Granular API endpoint control (issue #7, ticket pillar #5)
+
+`rest_api_enabled` is all-or-nothing: either every REST endpoint is reachable with a credential, or
+none is. **Administration → Settings → API → "Available API endpoints"** breaks that into one
+checkbox per endpoint — 81 of them across 24 controllers — grouped by controller in the same fieldset
+layout as the roles permission screen. Unchecking one makes it answer `403` to API callers while
+leaving it untouched for a human in the web interface.
+
+Five choices worth defending:
+
+- **The vocabulary is `accept_api_auth`, not a new registry.** Redmine already enumerates its API
+  surface: `accept_api_auth :index, :show, :create, …` in each controller, backed by the
+  `accept_api_auth_actions` class attribute, and `accept_api_auth?` is already consulted on every
+  request in `find_current_user`. An endpoint here is exactly that controller/action pair, written
+  `"issues#index"`. Nothing in the codebase enumerated the declarations before, so
+  `Redmine::ApiEndpoints.grouped` walks `ApplicationController.descendants` after
+  `Rails.application.eager_load!` — the same technique `Redmine::SubclassFactory` uses. Inventing a
+  second list of "what the API is" would have guaranteed the two drifting apart.
+- **The setting stores what is *disabled*, never what is enabled.** An endpoint the setting has never
+  seen — a plugin's, or one a later Redmine version adds — is therefore available, and an upgrade
+  cannot silently break a running integration. That is a structural property, not a default value:
+  there is no configuration in which an unknown endpoint is refused. The admin checkbox still reads as
+  "enabled" (checked = available, as on the roles screen); the inversion happens in
+  `Setting.rest_api_disabled_endpoints_from_params`, and the hidden companion field is what carries
+  the "disabled" value for an unchecked box.
+- **The gate is wider than `api_request?`, deliberately.** `accept_api_auth?` has **no format check**,
+  so a credential in a header authenticates an `accept_api_auth` action even when the request asks for
+  HTML: `GET /my/account` with `X-Redmine-API-Key` answers `200` where an anonymous browser is
+  redirected to the login form. A gate written as "only when `api_request?`" would have left that path
+  open — and `.csv` too. `ApplicationController#check_api_endpoint_enabled` therefore fires when the
+  request asks for an API representation **or** when an API credential is what authenticated it, which
+  it learns from a flag set in `find_current_user`. A human with a session cookie never enters that
+  branch, so the HTML interface is unaffected even when the same request also carries an API key.
+- **A disabled endpoint is indistinguishable from a disabled API.** The refusal is a bare `403` with an
+  empty body, which is byte-for-byte what `require_login` already answers when `rest_api_enabled` is
+  off. So a caller cannot read the configuration back out of the responses, and the reason goes to the
+  application log for the administrator instead. The filter is declared in `ApplicationController`
+  after `user_setup` and `check_if_login_required` and before every filter a subclass declares, so a
+  disabled write never reaches the action: `POST /issues.json` against a disabled `issues#create`
+  creates nothing.
+- **Nothing a form posts can name something that is not an endpoint.** The posted list is intersected
+  with the enumeration from the code, so `Kernel#system` simply is not stored, and enforcement is a
+  string `include?` — no `constantize`, no `send`, no route lookup anywhere in the path.
+
+**How it interacts with token scopes.** They are independent narrowings and neither can widen the
+other. A scope says *which permissions* a credential carries; the endpoint gate says *which actions
+the API answers at all*. The gate runs first, before authorisation, and applies to every credential —
+API key, personal access token, OAuth bearer, HTTP Basic, and after `X-Redmine-Switch-User` — with no
+exemption for administrators. So a disabled endpoint refuses an unscoped admin token exactly as it
+refuses a read-only one, and enabling an endpoint grants nobody a permission they did not have.
+
+**An administrator cannot lock themselves out.** The screen that re-enables endpoints is
+`SettingsController`, which declares no `accept_api_auth` — so it is not in the enumeration and
+`check_api_endpoint_enabled` returns before doing anything for it. Disabling all 81 endpoints leaves
+the settings screen working; there is no configuration in which it does not.
+
+Limits, stated rather than left to be discovered:
+
+- **The grain is the controller action, not the HTTP method or the record.** `issues#update` covers
+  `PUT` and `PATCH` together because they are the same action, and disabling `issues#index` disables
+  it for every project. Per-method and per-project control would need a different key.
+- **`.atom` is a separate authentication path** (`accept_atom_auth`, feeds keys) and is not gated
+  here. Neither are the Doorkeeper OAuth token endpoints, which do not inherit `ApplicationController`.
+- **A disabled endpoint is still advertised.** Nothing removes it from the routes, from the API
+  documentation, or from any UI that links to it; the enforcement is server-side only, which is the
+  right way round, but a client discovers the restriction by being refused.
+- **The list is only as accurate as `accept_api_auth`.** An action that is reachable with an API
+  credential without declaring it — there are none in core, because the declaration is what makes it
+  reachable — would not appear on the screen and could not be disabled.
+- **No audit of the refusals.** They are logged at info level with the endpoint name; there is no
+  structured record of who was refused what. That is pillar #4, issue #6, and is not built.
+
 ## Running and verifying
 
 ```bash

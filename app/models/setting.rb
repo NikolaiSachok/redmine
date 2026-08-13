@@ -232,6 +232,25 @@ class Setting < ApplicationRecord
     s
   end
 
+  # Returns the list of disabled API endpoints from the admin form.
+  #
+  # The form posts one value per endpoint -- '1' when the endpoint is disabled,
+  # '0' when it is not -- because what is *stored* has to be the disabled list:
+  # an endpoint missing from the setting must be enabled, or a plugin's
+  # endpoint, or one added by a later Redmine version, would stop working the
+  # moment an administrator saved this screen. The checkbox itself still reads
+  # as "enabled", like the roles permission screen.
+  #
+  # The result is intersected with the endpoints enumerated from the code, so
+  # nothing a form can post ever becomes a stored value that names no real
+  # endpoint.
+  def self.rest_api_disabled_endpoints_from_params(params)
+    return [] unless params.is_a?(Hash)
+
+    disabled = params.select {|_endpoint, value| value.to_s == '1'}.keys.map(&:to_s)
+    Redmine::ApiEndpoints.all & disabled
+  end
+
   def self.twofa_from_params(params)
     # unpair all current 2FA pairings when switching off 2FA
     Redmine::Twofa.unpair_all! if params == '0' && self.twofa?

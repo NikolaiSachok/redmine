@@ -74,6 +74,14 @@ class ApplicationController < ActionController::Base
   # unless it refreshes the cache itself, which it does.
   prepend_before_action :set_cors_headers
   before_action :session_expiration, :user_setup, :check_if_login_required, :set_localization, :check_password_change, :check_twofa_activation
+  # Declared after the filters above so that it runs after user_setup (which is
+  # where a request learns whether an API credential authenticated it) and
+  # after check_if_login_required (so an anonymous caller on a login_required
+  # instance is refused before this gate can tell it anything). Declared here,
+  # in ApplicationController, so that it also runs before every filter a
+  # subclass declares and therefore before the action can have any effect --
+  # a disabled write must not write and then report failure.
+  before_action :check_api_endpoint_enabled
   after_action :record_project_usage
 
   rescue_from ::Unauthorized, :with => :deny_access
@@ -188,6 +196,14 @@ class ApplicationController < ActionController::Base
           render_error :message => 'Invalid X-Redmine-Switch-User header', :status => 412
         end
       end
+      # Remember that an API credential, rather than the session, is what
+      # authenticated this request. check_api_endpoint_enabled needs it:
+      # accept_api_auth? has no format check, so a credential in a header
+      # authenticates an accept_api_auth action even for an HTML request.
+      # Set after the impersonation branch so that it covers a switched user
+      # too, and on the controller rather than on the user object, because how
+      # a request authenticated is a property of the request.
+      @authenticated_by_api_credential = true if user
     end
     # store current ip address in user object ephemerally
     user.remote_ip = request.remote_ip if user
@@ -238,6 +254,39 @@ class ApplicationController < ActionController::Base
     return true if User.current.logged?
 
     require_login if Setting.login_required?
+  end
+
+  # Refuses a REST API request to an endpoint an administrator has disabled.
+  #
+  # What counts as "a REST API request" here is deliberately wider than
+  # api_request?. accept_api_auth? has no format check, so a credential in a
+  # header authenticates an accept_api_auth action even when the request asks
+  # for HTML: GET /my/account with X-Redmine-API-Key answers 200 where an
+  # anonymous browser is redirected to the login form. A gate written as "only
+  # when api_request?" would leave that path wide open. So the gate applies
+  # when the request asks for an API representation *or* when an API credential
+  # is what authenticated it.
+  #
+  # It deliberately does not apply to a human browsing the HTML interface with
+  # a session cookie: that request never enters the API branch of
+  # find_current_user, so @authenticated_by_api_credential is false and the
+  # page renders as before. Disabling an endpoint restricts the API, not the
+  # user interface.
+  #
+  # The refusal is a bare 403, which is byte-for-byte what Redmine already
+  # answers when the REST API is switched off entirely (require_login's
+  # format.api branch heads :forbidden unless rest_api_enabled? &&
+  # accept_api_auth?). A disabled endpoint is therefore indistinguishable from
+  # a disabled API, and the reason is written to the log for the administrator
+  # instead of to the caller.
+  def check_api_endpoint_enabled
+    return true unless accept_api_auth?
+    return true unless api_request? || @authenticated_by_api_credential
+    return true unless Redmine::ApiEndpoints.disabled?(controller_path, action_name)
+
+    logger.info("  API endpoint #{controller_path}##{action_name} is disabled") if logger
+    render_error :message => :error_api_endpoint_disabled, :status => 403
+    false
   end
 
   def check_password_change

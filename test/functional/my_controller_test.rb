@@ -22,6 +22,11 @@ require_relative '../test_helper'
 class MyControllerTest < Redmine::ControllerTest
   def setup
     @request.session[:user_id] = 2
+    # rest_api_enabled defaults to 0, and the personal access token screens are
+    # gated on it (UI-001) exactly as the API key block beside them already was.
+    # The token tests below therefore have to declare the setting they depend
+    # on; the two that assert the gate itself override this with with_settings.
+    Setting.rest_api_enabled = '1'
   end
 
   def test_index
@@ -853,6 +858,51 @@ class MyControllerTest < Redmine::ControllerTest
       # that cannot run in this container; pin its markup here too
       assert_select '#sidebar #api-access-key'
       assert_select '#sidebar .api-key-actions .copy-api-key-link'
+    end
+  end
+
+  # UI-001. The sidebar link was already hidden when the API is off; the screens
+  # behind it were not, so a user could still reach them by URL and mint a token
+  # that cannot authenticate anything -- find_current_user never enters the API
+  # branch while the setting is off. Hiding a link is not authorization, so all
+  # four actions are asserted, not just the one the link pointed at.
+  def test_ui_001_the_token_screens_should_be_refused_when_the_rest_api_is_off
+    token = PersonalAccessToken.create!(:user => User.find(2), :name => 'existing')
+
+    with_settings :rest_api_enabled => '0' do
+      get :personal_access_tokens
+      assert_response :forbidden
+
+      get :new_personal_access_token
+      assert_response :forbidden
+
+      assert_no_difference 'PersonalAccessToken.count' do
+        post :create_personal_access_token,
+             :params => {:personal_access_token => {:name => 'api-off-token'}}
+      end
+      assert_response :forbidden
+
+      assert_no_difference 'PersonalAccessToken.count' do
+        delete :revoke_personal_access_token, :params => {:id => token.id}
+      end
+      assert_response :forbidden
+    end
+  end
+
+  # The complement, so the gate cannot be satisfied by refusing everything.
+  def test_ui_001_the_token_screens_should_work_when_the_rest_api_is_on
+    with_settings :rest_api_enabled => '1' do
+      get :personal_access_tokens
+      assert_response :success
+
+      get :new_personal_access_token
+      assert_response :success
+
+      assert_difference 'PersonalAccessToken.count', 1 do
+        post :create_personal_access_token,
+             :params => {:personal_access_token => {:name => 'api-on-token'}}
+      end
+      assert_response :success
     end
   end
 

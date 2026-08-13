@@ -130,4 +130,39 @@ class PersonalAccessTokensControllerTest < Redmine::ControllerTest
 
     assert_response :not_found
   end
+
+  # UI-002. The administration screen deliberately does *not* follow the
+  # self-service screens in being gated on rest_api_enabled?, and this pins the
+  # asymmetry so nobody "fixes" it into consistency later.
+  #
+  # Switching the API off is the first thing anyone does in an incident. Tokens
+  # are not destroyed by it -- they are inert while it is off and re-arm the
+  # moment it goes back on -- so that is precisely when an administrator needs
+  # the screen that revokes them. The menu entry used to be gated, which meant
+  # the switch removed the only route to it.
+  def test_ui_002_the_admin_screen_should_stay_usable_when_the_rest_api_is_off
+    token = PersonalAccessToken.create!(:user => User.find(2), :name => 'live-token')
+
+    with_settings :rest_api_enabled => '0' do
+      get :index
+      assert_response :success
+      assert_select 'table.list td', :text => 'live-token'
+
+      assert_difference 'PersonalAccessToken.count', -1 do
+        delete :destroy, :params => {:id => token.id}
+      end
+      assert_redirected_to '/personal_access_tokens'
+    end
+  end
+
+  # The navigation half of UI-002: reachable means linked, not merely served.
+  def test_ui_002_the_admin_menu_entry_should_survive_the_api_being_switched_off
+    with_settings :rest_api_enabled => '0' do
+      item = Redmine::MenuManager.items(:admin_menu).detect {|node| node.name == :personal_access_tokens}
+
+      assert_not_nil item, 'the admin menu no longer offers the personal access tokens screen'
+      assert item.condition.nil? || item.condition.call(nil),
+             'the admin menu entry is hidden while the REST API is off, which is the only route to revocation'
+    end
+  end
 end

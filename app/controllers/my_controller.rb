@@ -26,6 +26,9 @@ class MyController < ApplicationController
   accept_api_auth :account
 
   before_action :deny_account_update_by_a_scoped_token, :only => :account
+  before_action :require_rest_api_enabled,
+                :only => [:personal_access_tokens, :new_personal_access_token,
+                          :create_personal_access_token, :revoke_personal_access_token]
 
   require_sudo_mode :account, only: :put
   require_sudo_mode :reset_atom_key, :reset_api_key, :show_api_key, :destroy
@@ -270,6 +273,21 @@ class MyController < ApplicationController
 
     render_error :message => l(:error_scoped_token_cannot_update_account), :status => 403
     false
+  end
+
+  # The token screens are navigationally hidden when the REST API is off --
+  # my/_sidebar.html.erb wraps the link in the same setting -- and hiding a link
+  # is not authorization. Without this the screens stayed reachable by URL and a
+  # user could mint a token that cannot authenticate anything, because
+  # find_current_user never enters the API branch while the setting is off.
+  #
+  # 403 rather than 404, following the nearest precedent: Doorkeeper's
+  # admin_authenticator and resource_owner_authenticator both deny_access on
+  # this same setting (config/initializers/30-redmine.rb:66-79).
+  def require_rest_api_enabled
+    return true if Setting.rest_api_enabled?
+
+    render_403
   end
 
   # The scope a create request gets when it does not choose one is the same

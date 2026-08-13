@@ -14,14 +14,15 @@ It is a deliberately small slice of a large ticket, branched from tag `6.1.2`. R
 | | |
 |---|---|
 | **Done** | PAT model with hashed storage and per-token expiry; REST API authentication; My account management screen; **administration overview of every user's tokens**; **an administrator ceiling on token lifetime**; **cleanup of long-expired rows**; unit, integration, functional and routing tests |
-| **Also done** | **Permission scopes for tokens** — one of pillar #2's four bullets: a read-only preset, a full-access preset and a permission picker, enforced through the mechanism Redmine already uses for OAuth2 scopes; **CORS for the REST API** (pillar #6) — an administrator allowlist of origins, off by default |
-| **Deferred** | The rest of pillar #2 — per-tracker scoping, per-project scoping and an administrator-defined scope vocabulary; audit logging, granular endpoint control, the 2FA posture, migration off the legacy API key — each an issue with reasoning |
+| **Also done** | **Permission scopes for tokens** — one of pillar #2's four bullets: a read-only preset, a full-access preset and a permission picker, enforced through the mechanism Redmine already uses for OAuth2 scopes; **CORS for the REST API** (pillar #6) — an administrator allowlist of origins, off by default; **granular API endpoint control** (pillar #5) — one checkbox per API endpoint, everything enabled by default |
+| **Deferred** | The rest of pillar #2 — per-tracker scoping, per-project scoping and an administrator-defined scope vocabulary; audit logging, the 2FA posture, migration off the legacy API key — each an issue with reasoning |
 | **Out of scope** | Rate limiting, excluded by the brief |
 | **Untouched** | The existing `api_key`, and `Token`, which it is built on |
 
-Deferred work is on the issue tracker rather than in this file's small print: issues #6, #7, #10,
-#15, #17, #18 and #19, labelled `deferred`. CORS (#8) started there and was implemented
-after the core was solid; it and the scopes work each have their own section below. Two pre-existing weaknesses found while reading the code are recorded as #11
+Deferred work is on the issue tracker rather than in this file's small print: issues #6, #10,
+#15, #17, #18 and #19, labelled `deferred`. CORS (#8) and granular endpoint control (#7) both
+started there and were implemented after the core was solid; they and the scopes work each have
+their own section below. Two pre-existing weaknesses found while reading the code are recorded as #11
 and #12; #11 is now fixed, because the red team showed this feature makes it reachable with a new
 credential, and #12 stays open because closing it fully belongs to the OAuth path, not to this slice.
 
@@ -404,7 +405,19 @@ authorisation; the real request that follows is authenticated exactly as before.
 none is. **Administration → Settings → API → "Available API endpoints"** breaks that into one
 checkbox per endpoint — 81 of them across 24 controllers — grouped by controller in the same fieldset
 layout as the roles permission screen. Unchecking one makes it answer `403` to API callers while
-leaving it untouched for a human in the web interface.
+leaving the HTML pages a human browses untouched.
+
+**Read this before switching anything off.** Disabling a *read* endpoint does **not** stop the same
+data being read, because Redmine serves much of it a second time through `.atom` feeds, which are a
+separate authentication path this setting does not cover. With `issues#index`, `issues#show`,
+`projects#index`, `news#index` and `timelog#index` all disabled, the red team read every one of them
+back through its feed — with an atom key, with an API key, and, for public projects, **with no
+credential at all**. So this feature restricts *the REST API*; it is not a read-exfiltration control,
+and treating it as one would be a mistake an administrator could reasonably make from the screen's
+wording alone. Gating feeds too was rejected deliberately: an atom key is the credential ordinary feed
+subscribers already hold, their reader would break with no diagnosis, and the same URL would then be
+served or refused depending on which credential it carried. The write endpoints, which have no feed,
+are fully covered.
 
 Five choices worth defending:
 
@@ -430,17 +443,29 @@ Five choices worth defending:
   open — and `.csv` too. `ApplicationController#check_api_endpoint_enabled` therefore fires when the
   request asks for an API representation **or** when an API credential is what authenticated it, which
   it learns from a flag set in `find_current_user`. A human with a session cookie never enters that
-  branch, so the HTML interface is unaffected even when the same request also carries an API key.
-- **A disabled endpoint is indistinguishable from a disabled API.** The refusal is a bare `403` with an
-  empty body, which is byte-for-byte what `require_login` already answers when `rest_api_enabled` is
-  off. So a caller cannot read the configuration back out of the responses, and the reason goes to the
-  application log for the administrator instead. The filter is declared in `ApplicationController`
-  after `user_setup` and `check_if_login_required` and before every filter a subclass declares, so a
-  disabled write never reaches the action: `POST /issues.json` against a disabled `issues#create`
-  creates nothing.
+  branch, so **HTML pages** render exactly as before even when the same request also carries an API
+  key. What that does *not* mean: a session request for `/issues.json` **is** refused when
+  `issues#index` is disabled, because `api_request?` alone satisfies the condition — the JSON
+  representation is the API, however it authenticated. No stock UI path breaks (Redmine's own XHR goes
+  through `auto_completes` and filter endpoints, which declare no `accept_api_auth`), but a plugin or
+  a script that fetches a disabled endpoint's JSON with a session cookie will be refused.
+- **The refusal is a bare `403` with an empty body on every format.** That is `render_error` minus its
+  `format.html` branch, and the subtraction is the point: `render_error` answers an HTML request with a
+  full error page naming the reason, so the very path this gate exists to cover — HTML plus a header
+  credential — would have leaked what a `.json` caller is not told. What is left is byte-for-byte what
+  `require_login` already answers when `rest_api_enabled` is off, content type included, and the reason
+  goes to the application log for the administrator instead. The filter is declared in
+  `ApplicationController` after `user_setup` and `check_if_login_required` and before every filter a
+  subclass declares, so a disabled write never reaches the action: `POST /issues.json` against a
+  disabled `issues#create` creates nothing.
 - **Nothing a form posts can name something that is not an endpoint.** The posted list is intersected
   with the enumeration from the code, so `Kernel#system` simply is not stored, and enforcement is a
-  string `include?` — no `constantize`, no `send`, no route lookup anywhere in the path.
+  string `include?` — no `constantize`, no `send`, no route lookup anywhere in the path. The
+  intersection alone was a fail-open, though, and that had to be fixed: the screen only shows what the
+  enumeration lists, so it can only post that back, and an entry the walk stopped seeing — a plugin
+  whose controller failed to load — was silently dropped and thereby *re-enabled*. Stored entries the
+  enumeration cannot see are now carried over instead, and the carry is written to the log, because a
+  screen that does not show every stored value should not also keep that quiet.
 
 **How it interacts with token scopes.** They are independent narrowings and neither can widen the
 other. A scope says *which permissions* a credential carries; the endpoint gate says *which actions
@@ -456,19 +481,89 @@ the settings screen working; there is no configuration in which it does not.
 
 Limits, stated rather than left to be discovered:
 
-- **The grain is the controller action, not the HTTP method or the record.** `issues#update` covers
-  `PUT` and `PATCH` together because they are the same action, and disabling `issues#index` disables
-  it for every project. Per-method and per-project control would need a different key.
-- **`.atom` is a separate authentication path** (`accept_atom_auth`, feeds keys) and is not gated
-  here. Neither are the Doorkeeper OAuth token endpoints, which do not inherit `ApplicationController`.
+- **`.atom` feeds are not covered**, which is the limit that most changes what the feature is worth —
+  see the paragraph at the top of this section. Neither are the Doorkeeper OAuth token endpoints,
+  which do not inherit `ApplicationController`, nor `sys_controller` and `mail_handler_controller`,
+  which authenticate against their own shared-secret settings rather than a `Token` and have their own
+  enable flags.
+- **The grain is the controller action, not the HTTP method, the project or the record.**
+  `issues#update` covers `PUT` and `PATCH` together because they are the same action; disabling
+  `issues#index` disables it for every project; and nothing here can say "this endpoint, but only for
+  these issues". Per-method, per-project and per-record control would each need a different key.
+- **A credential holder can still map the configuration, and so, on a common setup, can a stranger.**
+  A caller who *would* have been served can tell `403` from `200`, which is inherent: an endpoint that
+  is off has to behave differently from one that is on. What is *not* inherent, and was originally
+  claimed as defended when it is not: with `login_required` off — the default, and a common
+  configuration for a public tracker — an **anonymous** caller reaches the gate too, so a disabled
+  endpoint answers `403` where an enabled one answers `401` (needs authentication) or `200` (public).
+  All 81 endpoints are therefore mappable with **no credential at all**. Only `login_required` closes
+  that, by refusing the anonymous request before the gate can say anything. The information disclosed
+  is the administrator's configuration, not data, but it is disclosed.
+- **Disabling a whole controller group silently gains members later.** The `<fieldset>` per controller
+  is a UI convenience — the "toggle all" link ticks the boxes that exist when the page is rendered, and
+  what is stored is those endpoint names, one by one. There is no stored notion of "all of
+  `issues`". So a plugin that adds `issues#some_new_action`, or a Redmine upgrade that does, lands
+  **enabled** inside a group an administrator believes they switched off. That is the direct cost of
+  the "unknown means enabled" rule, and the two really are in tension: storing groups would honour the
+  administrator's evident intent, and would also mean an upgrade could disable an endpoint nobody chose
+  to disable, silently breaking a working integration. The rule was kept because a feature that removes
+  API surface must fail towards *available*, and because the failure it prevents is invisible to the
+  administrator while this one is at least visible on the screen — every endpoint is listed with its
+  own checkbox, so an unticked group with a new ticked member shows as exactly that. It stays a real
+  limit, not a settled argument.
 - **A disabled endpoint is still advertised.** Nothing removes it from the routes, from the API
   documentation, or from any UI that links to it; the enforcement is server-side only, which is the
   right way round, but a client discovers the restriction by being refused.
 - **The list is only as accurate as `accept_api_auth`.** An action that is reachable with an API
   credential without declaring it — there are none in core, because the declaration is what makes it
   reachable — would not appear on the screen and could not be disabled.
+- **Rendering the settings screen eager-loads the application.** `common/_tabs.html.erb` renders every
+  tab's partial on every settings page, so enumerating the endpoints happens on any `GET /settings`,
+  not just the API tab. The cost is not the problem (0.72 s cold, 20 µs warm, and in production Rails
+  has eager-loaded at boot already); the exposure is that a load error anywhere under `app/`, `lib/` or
+  a plugin would have taken down the one screen an administrator would use to undo it. So the walk
+  rescues, logs, and enumerates whatever did load — and because unseen stored entries are now carried
+  over rather than dropped, a degraded walk cannot re-enable anything either.
 - **No audit of the refusals.** They are logged at info level with the endpoint name; there is no
   structured record of who was refused what. That is pillar #4, issue #6, and is not built.
+
+### Endpoint control, against a running server
+
+Unedited, with `issues#index` and `my#account` unchecked. The credential is read into a shell variable
+and never printed — the point of running this by hand is the fourth and sixth blocks, which no test
+would have shown as plainly.
+
+```console
+### 1. an enabled endpoint, unchanged
+GET /news.json           X-Redmine-API-Key    -> HTTP 200  49 bytes  application/json; charset=utf-8
+
+### 2. a disabled endpoint, every format -- bare 403, empty body
+GET /issues.json         X-Redmine-API-Key    -> HTTP 403  0 bytes  application/json
+GET /issues.xml          X-Redmine-API-Key    -> HTTP 403  0 bytes  application/xml
+GET /my/account (HTML)   X-Redmine-API-Key    -> HTTP 403  0 bytes  */*
+
+### 3. the same request with the whole REST API switched off
+GET /issues.json         X-Redmine-API-Key    -> HTTP 403  0 bytes  application/json
+
+### 4. Atom is a separate read path and is NOT gated (a limit, not a bug)
+GET /issues.atom?key=<atom key>               -> HTTP 200  2541 bytes  application/atom+xml; charset=utf-8
+GET /issues.atom?key=<api key>                -> HTTP 200  2541 bytes  application/atom+xml; charset=utf-8
+GET /issues.atom            (no credential)   -> HTTP 200  2496 bytes  application/atom+xml; charset=utf-8
+
+### 5. the HTML interface is untouched
+GET /issues                 (no credential)   -> HTTP 200  35467 bytes  text/html; charset=utf-8
+
+### 6. the configuration oracle, anonymous, login_required off
+GET /issues.json  disabled        (no cred.)  -> HTTP 403  0 bytes  application/json
+GET /users.json   enabled, private (no cred.) -> HTTP 401  0 bytes  application/json
+GET /news.json    enabled, public  (no cred.) -> HTTP 200  49 bytes  application/json; charset=utf-8
+```
+
+Block 2 is what the manual pass was for. Before this round the third line answered `403` with a
+**7,804-byte HTML page** saying the endpoint had been disabled by the administrator, while this file
+asserted the opposite; block 3 is the baseline it now matches byte for byte. Every enforcement test
+runs through the real Rack stack, and none of them caught it, because they compared the `.json` path
+only.
 
 ## Running and verifying
 

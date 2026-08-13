@@ -137,6 +137,47 @@ class Redmine::ApiEndpointsTest < ActiveSupport::TestCase
     assert_equal [], Setting.rest_api_disabled_endpoints_from_params(nil)
   end
 
+  def test_from_params_should_keep_a_stored_endpoint_the_enumeration_cannot_see
+    # The screen only shows endpoints the enumeration lists, so it can only
+    # post those back. Intersecting with the enumeration alone therefore
+    # *re-enables* anything it stopped listing -- a plugin's controller that
+    # failed to load, say. That is a fail-open on save, so stored entries the
+    # walk cannot see are carried over instead.
+    Redmine::ApiEndpoints.stubs(:all).returns(['issues#index', 'issues#show'])
+
+    with_settings :rest_api_disabled_endpoints => ['issues#index', 'a_plugin/things#index'] do
+      result = Setting.rest_api_disabled_endpoints_from_params(
+        {:'issues#index' => '1', :'issues#show' => '0'}
+      )
+
+      assert_include 'a_plugin/things#index', result
+      assert_include 'issues#index', result
+      assert_not_include 'issues#show', result
+    end
+  end
+
+  def test_from_params_should_still_let_a_visible_endpoint_be_re_enabled
+    # The carry-over must not turn the screen read-only: an endpoint the
+    # enumeration does list is governed by what the form posts, as before.
+    with_settings :rest_api_disabled_endpoints => ['issues#index', 'news#index'] do
+      result = Setting.rest_api_disabled_endpoints_from_params(
+        {:'issues#index' => '0', :'news#index' => '1'}
+      )
+
+      assert_equal ['news#index'], result
+    end
+  end
+
+  def test_from_params_should_read_action_controller_parameters
+    # params.is_a?(Hash) is false for ActionController::Parameters, and a guard
+    # that answered [] for it would silently re-enable every endpoint.
+    params = ActionController::Parameters.new(
+      'issues#index' => '1', 'issues#show' => '0'
+    )
+
+    assert_equal ['issues#index'], Setting.rest_api_disabled_endpoints_from_params(params)
+  end
+
   def test_the_setting_should_round_trip_through_the_database
     Setting.rest_api_disabled_endpoints = ['issues#index', 'my#account']
     Setting.clear_cache

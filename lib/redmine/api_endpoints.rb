@@ -37,10 +37,11 @@ module Redmine
   #   +Setting.rest_api_disabled_endpoints_from_params+ additionally intersects
   #   what the form posts with what was enumerated from the code, so a value
   #   that names no real endpoint cannot even be stored.
-  # * **Enumeration never runs on the request path.** Deciding whether the
+  # * **Enumeration never runs on the API request path.** Deciding whether the
   #   current request is disabled is one Array#include? against a memoised
-  #   Setting; walking the controllers is only done by the admin screen and
-  #   when the setting is saved.
+  #   Setting; walking the controllers is only done by the admin screen -- on
+  #   any settings tab, not only the API one, because common/_tabs.html.erb
+  #   renders every tab's partial -- and when the setting is saved.
   module ApiEndpoints
     SEPARATOR = '#'
 
@@ -62,7 +63,7 @@ module Redmine
       # +descendants+ is the same technique Redmine::SubclassFactory already
       # uses to enumerate subclasses.
       def grouped
-        Rails.application.eager_load!
+        eager_load!
         pairs =
           ApplicationController.descendants.filter_map do |klass|
             # anonymous controllers (tests build them) have no stable identity
@@ -74,6 +75,23 @@ module Redmine
             [klass.controller_path, actions]
           end
         pairs.sort_by(&:first).to_h
+      end
+
+      # Administration > Settings renders *every* tab's partial on every load
+      # (common/_tabs.html.erb), so this runs on any settings page, not only
+      # the API one. It costs nothing after the first call, but in an
+      # environment that does not eager load at boot it means a load error in
+      # any file under app/ or lib/, or in a plugin, would otherwise take the
+      # settings screen down -- including the screen an administrator would use
+      # to undo whatever caused it. Enumerate what did load and record the
+      # rest; Setting.rest_api_disabled_endpoints_from_params keeps stored
+      # entries a partial enumeration cannot see, so a degraded walk cannot
+      # re-enable anything either.
+      def eager_load!
+        Rails.application.eager_load!
+      rescue StandardError, ScriptError => e
+        Rails.logger&.error("Could not load every controller while enumerating API endpoints: #{e.class}: #{e.message}")
+        false
       end
 
       def id_for(controller, action)

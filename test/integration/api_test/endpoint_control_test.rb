@@ -300,6 +300,127 @@ class Redmine::ApiTest::EndpointControlTest < Redmine::ApiTest::Base
     end
   end
 
+  def test_ep_004_the_refusal_should_have_an_empty_body_on_the_html_path_too
+    # render_error's format.html branch answers a full error page naming the
+    # reason, which would tell an HTML-with-a-credential caller far more than
+    # the .json path does. The refusal is a bare head on every path.
+    key = User.find_by_login('jsmith').api_key
+
+    with_settings :rest_api_disabled_endpoints => ['my#account'] do
+      get '/my/account', :headers => {'X-Redmine-API-Key' => key}
+      assert_response :forbidden
+      assert_equal '', response.body
+    end
+  end
+
+  def test_ep_013_an_atom_feed_authenticated_with_an_atom_key_should_not_be_gated
+    # The larger population: an ordinary feed subscriber whose reader holds an
+    # atom key. Disabling issues#index for the API must not unsubscribe them.
+    atom_key = User.find_by_login('jsmith').atom_key
+
+    with_settings :rest_api_disabled_endpoints => ['issues#index'] do
+      get "/issues.atom?key=#{atom_key}"
+      assert_response :ok
+      assert_equal 'application/atom+xml', response.media_type
+
+      get '/issues.json', :headers => credentials('jsmith')
+      assert_response :forbidden
+    end
+  end
+
+  def test_ep_013_an_atom_feed_authenticated_with_an_api_key_should_not_be_gated_either
+    # ?key= holding an *API* key misses find_by_atom_key and falls through to
+    # the API branch, which is what sets the credential flag. Without the atom
+    # guard in the gate this answered 403 while the atom-key request beside it
+    # answered 200 -- the same URL, the same data, two different answers.
+    key = User.find_by_login('jsmith').api_key
+
+    with_settings :rest_api_disabled_endpoints => ['issues#index'] do
+      get "/issues.atom?key=#{key}"
+      assert_response :ok
+      assert_equal 'application/atom+xml', response.media_type
+    end
+  end
+
+  def test_ep_014_an_anonymous_caller_can_map_disabled_endpoints_without_login_required
+    # The accepted residue, pinned so that the README and the code agree. With
+    # login_required off, check_if_login_required lets an anonymous request
+    # reach the gate, so "disabled" (403) is distinguishable from
+    # "enabled, needs authentication" (401) with no credential at all.
+    with_settings :login_required => '0' do
+      get '/users.json'
+      assert_response :unauthorized
+
+      with_settings :rest_api_disabled_endpoints => ['users#index'] do
+        get '/users.json'
+        assert_response :forbidden
+      end
+    end
+  end
+
+  def test_ep_014_an_anonymous_caller_should_be_refused_before_the_gate_when_login_is_required
+    # The other half of the same statement: with login_required on, the
+    # anonymous oracle is closed, because check_if_login_required answers
+    # first and answers the same 401 either way.
+    with_settings :login_required => '1' do
+      get '/users.json'
+      assert_response :unauthorized
+      enabled = [response.code, response.body]
+
+      with_settings :rest_api_disabled_endpoints => ['users#index'] do
+        get '/users.json'
+        assert_equal enabled, [response.code, response.body]
+      end
+    end
+  end
+
+  def test_ep_018_a_session_request_for_an_api_representation_should_be_refused
+    # "The web interface is not affected" is true of HTML pages only. The .json
+    # representation *is* the API, whatever authenticated it, so a session
+    # request for a disabled endpoint's JSON is refused.
+    log_user('jsmith', 'jsmith')
+
+    with_settings :rest_api_disabled_endpoints => ['issues#index'] do
+      get '/issues'
+      assert_response :ok
+      get '/issues.json'
+      assert_response :forbidden
+      get '/issues.xml'
+      assert_response :forbidden
+    end
+  end
+
+  def test_the_refusals_rendered_in_user_setup_should_still_win_over_the_gate
+    # Three refusals are rendered inside user_setup itself, which halts the
+    # filter chain before this gate. Their statuses say what is wrong with the
+    # credential; the gate's 403 would say something about the configuration
+    # instead. Nothing but filter declaration order keeps that true.
+    with_settings :rest_api_disabled_endpoints => Redmine::ApiEndpoints.all do
+      twofa_user = User.generate! do |user|
+        user.password = 'my_password'
+        user.update(:twofa_scheme => 'totp')
+      end
+      get '/users/current.json', :headers => credentials(twofa_user.login, 'my_password')
+      assert_response :unauthorized
+
+      # Asked for as HTML, because both this refusal and the gate answer 403 --
+      # only the body tells them apart, and on the API path both bodies are
+      # empty. Here user_setup's message is what must come back.
+      pwd_user = User.generate! do |user|
+        user.password = 'my_password'
+        user.must_change_passwd = true
+      end
+      get '/my/account', :headers => credentials(pwd_user.login, 'my_password')
+      assert_response :forbidden
+      assert_include 'You must change your password', response.body
+
+      get '/users/current.json',
+          :headers => {'X-Redmine-API-Key' => User.find_by_login('admin').api_key,
+                       'X-Redmine-Switch-User' => 'nobody-by-that-name'}
+      assert_response :precondition_failed
+    end
+  end
+
   def test_ep_r11_the_default_configuration_should_change_nothing
     assert_equal [], Setting.rest_api_disabled_endpoints
 

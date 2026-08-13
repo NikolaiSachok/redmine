@@ -267,25 +267,41 @@ class ApplicationController < ActionController::Base
   # when the request asks for an API representation *or* when an API credential
   # is what authenticated it.
   #
-  # It deliberately does not apply to a human browsing the HTML interface with
-  # a session cookie: that request never enters the API branch of
+  # It deliberately does not apply to a human browsing the *HTML* interface
+  # with a session cookie: that request never enters the API branch of
   # find_current_user, so @authenticated_by_api_credential is false and the
-  # page renders as before. Disabling an endpoint restricts the API, not the
-  # user interface.
+  # page renders as before. It does apply to a session request that asks for
+  # the .json or .xml representation of a disabled endpoint, because
+  # api_request? alone satisfies the condition above -- the API representation
+  # is what an administrator switched off, however it authenticated.
   #
-  # The refusal is a bare 403, which is byte-for-byte what Redmine already
-  # answers when the REST API is switched off entirely (require_login's
-  # format.api branch heads :forbidden unless rest_api_enabled? &&
-  # accept_api_auth?). A disabled endpoint is therefore indistinguishable from
-  # a disabled API, and the reason is written to the log for the administrator
-  # instead of to the caller.
+  # Atom is left alone entirely. A feed is a parallel read surface with its own
+  # credential (the atom key, resolved in an earlier branch of
+  # find_current_user, which never sets the flag) and its own links generated
+  # by the web interface. Gating only the feeds that happen to carry an API key
+  # would refuse one subscriber and serve the next from the same URL, so
+  # neither is gated -- and the consequence, that a disabled read endpoint is
+  # still readable through its feed, is stated as a limit in README.md.
+  #
+  # The refusal is a bare 403 with an empty body on *every* format. This is
+  # render_error minus its format.html branch, which renders a full error page
+  # naming the reason -- and would therefore tell an HTML-with-a-credential
+  # caller exactly what a .json caller is not told. What is left is
+  # byte-for-byte what Redmine already answers when the REST API is switched
+  # off entirely (require_login's format.api branch heads :forbidden unless
+  # rest_api_enabled? && accept_api_auth?), content type included, and the
+  # reason is written to the log for the administrator instead of to the
+  # caller.
   def check_api_endpoint_enabled
     return true unless accept_api_auth?
+    return true if params[:format] == 'atom' && accept_atom_auth?
     return true unless api_request? || @authenticated_by_api_credential
     return true unless Redmine::ApiEndpoints.disabled?(controller_path, action_name)
 
     logger.info("  API endpoint #{controller_path}##{action_name} is disabled") if logger
-    render_error :message => :error_api_endpoint_disabled, :status => 403
+    respond_to do |format|
+      format.any {head :forbidden}
+    end
     false
   end
 

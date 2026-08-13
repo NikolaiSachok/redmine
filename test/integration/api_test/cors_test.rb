@@ -27,8 +27,14 @@ require_relative '../../test_helper'
 class Redmine::ApiTest::CorsTest < Redmine::ApiTest::Base
   ALLOWED = 'https://app.example.com'
 
+  def setup
+    super
+    set_fixtures_attachments_directory
+  end
+
   def teardown
     super
+    set_tmp_attachments_directory
     Setting.rest_api_cors_origins = ''
   end
 
@@ -246,18 +252,41 @@ class Redmine::ApiTest::CorsTest < Redmine::ApiTest::Base
   end
 
   # CORS-005: the preflight answer is the same for every path, so it discloses
-  # neither which resources exist nor which ones the caller could read.
-  def test_preflight_should_not_disclose_whether_the_resource_exists
+  # neither which resources exist nor which ones the caller could read. The
+  # third path in each group is the one the caller would be *forbidden* from
+  # reading -- /users.json is administrators only and /issues/4.json is in a
+  # private project -- and it has to be indistinguishable from the rest.
+  def test_preflight_should_not_disclose_whether_the_resource_exists_or_is_permitted
     Setting.rest_api_cors_origins = ALLOWED
     headers = {'HTTP_ORIGIN' => ALLOWED, 'HTTP_ACCESS_CONTROL_REQUEST_METHOD' => 'GET'}
+    paths = [
+      '/issues/1.json',      # exists and is readable
+      '/issues/999999.json', # does not exist
+      '/no/such/thing.json', # not even a route
+      '/users.json',         # exists, but anonymous would get 401/403
+      '/issues/4.json',      # exists, in a project this caller cannot see
+      '/admin.json'          # administration
+    ]
 
-    responses = ['/issues/1.json', '/issues/999999.json', '/no/such/thing.json'].map do |path|
+    responses = paths.map do |path|
       options path, :headers => headers
-      [response.status, response.body, response.headers['Access-Control-Allow-Origin']]
+      [
+        response.status,
+        response.body,
+        response.headers['Access-Control-Allow-Origin'],
+        response.headers['Access-Control-Allow-Methods'],
+        response.headers['Access-Control-Allow-Headers'],
+        response.headers['Access-Control-Max-Age'],
+        response.headers['Set-Cookie']
+      ]
     end
 
     assert_equal 1, responses.uniq.size, "preflight answers differed: #{responses.inspect}"
-    assert_equal [204, '', ALLOWED], responses.first
+    assert_equal(
+      [204, '', ALLOWED, Redmine::Cors::ALLOWED_METHODS, Redmine::Cors::ALLOWED_HEADERS,
+       Redmine::Cors::MAX_AGE, nil],
+      responses.first
+    )
   end
 
   # CORS-R7: no preflight answer for an origin that is not allowed. The route
@@ -337,6 +366,162 @@ class Redmine::ApiTest::CorsTest < Redmine::ApiTest::Base
     get '/users.json', :headers => {'HTTP_ORIGIN' => ALLOWED}
 
     assert_response :unauthorized
+  end
+
+  # CORS-010, from the attack ledger. api_request? is true whenever
+  # params[:format] is json or xml, and that can be supplied as a query
+  # parameter on any route at all -- so before the filter was narrowed to the
+  # format the *route* resolved, a caller could opt a plain file download into
+  # the CORS policy and read the raw bytes cross-origin. The response is a
+  # normal successful download; only the CORS headers must be absent.
+  def test_cors_010_a_format_query_parameter_must_not_put_cors_headers_on_a_file_download
+    Setting.rest_api_cors_origins = ALLOWED
+
+    get '/attachments/download/4?format=json', :headers => {'HTTP_ORIGIN' => ALLOWED}.merge(credentials('jsmith'))
+
+    assert_response :success
+    assert_equal 'This is a Ruby source file', Attachment.find(4).description
+    assert_includes response.body, 'class'
+    assert_nil response.headers['Access-Control-Allow-Origin']
+    assert_nil response.headers['Access-Control-Expose-Headers']
+    assert_not_includes vary_fields, 'origin'
+  end
+
+  # CORS-006, the same trick on HTML routes. These answer 403 or a redirect
+  # rather than a body worth stealing, but a policy whose scope the caller
+  # chooses is not a policy.
+  def test_cors_006_a_format_query_parameter_must_not_put_cors_headers_on_an_html_route
+    Setting.rest_api_cors_origins = ALLOWED
+
+    ['/admin?format=json', '/settings?format=json', '/my/page?format=xml', '/issues?format=json'].each do |path|
+      get path, :headers => {'HTTP_ORIGIN' => ALLOWED}.merge(credentials('jsmith'))
+
+      assert_nil response.headers['Access-Control-Allow-Origin'], "#{path} carried Access-Control-Allow-Origin"
+      assert_not_includes vary_fields, 'origin', "#{path} carried Vary: Origin"
+    end
+  end
+
+  # CORS-014, from the attack ledger. This pins a precondition of the whole
+  # design rather than any line of CORS code: find_current_user skips the
+  # session entirely when api_request?, so a cross-origin request cannot be
+  # authorised by the browser's cookie no matter what the CORS headers say.
+  # That is why Access-Control-Allow-Credentials is never needed, and why
+  # echoing an allowed origin is safe. If this ever stops holding, the CORS
+  # policy becomes a session-riding hole.
+  def test_cors_014_an_api_format_request_never_authenticates_from_the_session
+    Setting.rest_api_cors_origins = ALLOWED
+    log_user('jsmith', 'jsmith')
+
+    # Same session, same cookie jar: the HTML page is authenticated...
+    get '/my/account', :headers => {'HTTP_ORIGIN' => ALLOWED}
+    assert_response :success
+
+    # ...and the API representation of the very same resource is not.
+    get '/my/account.json', :headers => {'HTTP_ORIGIN' => ALLOWED}
+    assert_response :unauthorized
+
+    get '/users/current.json', :headers => {'HTTP_ORIGIN' => ALLOWED}
+    assert_response :unauthorized
+  end
+
+  # The reason the filter is prepended. These three refusals are rendered
+  # inside user_setup itself, which halts the filter chain; a filter running
+  # after it would never set the headers, and a browser client would see an
+  # opaque network error instead of the 401 or 403 telling it what is wrong.
+  def test_allowed_origin_should_receive_the_header_on_a_refusal_rendered_in_user_setup
+    Setting.rest_api_cors_origins = ALLOWED
+
+    # HTTP Basic while two-factor authentication is active -> 401.
+    twofa_user = User.generate! do |user|
+      user.password = 'my_password'
+      user.update(:twofa_scheme => 'totp')
+    end
+    get '/users/current.json',
+        :headers => {'HTTP_ORIGIN' => ALLOWED}.merge(credentials(twofa_user.login, 'my_password'))
+    assert_response :unauthorized
+    assert_equal ALLOWED, response.headers['Access-Control-Allow-Origin']
+    assert_includes vary_fields, 'origin'
+
+    # A password that must be changed before anything else -> 403.
+    pwd_user = User.generate! do |user|
+      user.password = 'my_password'
+      user.must_change_passwd = true
+    end
+    get '/users/current.json',
+        :headers => {'HTTP_ORIGIN' => ALLOWED}.merge(credentials(pwd_user.login, 'my_password'))
+    assert_response :forbidden
+    assert_equal ALLOWED, response.headers['Access-Control-Allow-Origin']
+
+    # A revoked OAuth token -> doorkeeper_render_error, also inside user_setup.
+    application = Doorkeeper::Application.create!(
+      :name => 'cors test', :redirect_uri => 'urn:ietf:wg:oauth:2.0:oob', :scopes => 'view_issues'
+    )
+    token = Doorkeeper::AccessToken.create!(
+      :application => application, :resource_owner_id => 2, :scopes => 'view_issues'
+    )
+    token.revoke
+    get '/users/current.json',
+        :headers => {'HTTP_ORIGIN' => ALLOWED, 'HTTP_AUTHORIZATION' => "Bearer #{token.plaintext_token}"}
+    assert_response :unauthorized
+    assert_equal ALLOWED, response.headers['Access-Control-Allow-Origin']
+  end
+
+  def test_disallowed_origin_should_receive_nothing_on_a_refusal_rendered_in_user_setup
+    Setting.rest_api_cors_origins = ALLOWED
+    user = User.generate! do |u|
+      u.password = 'my_password'
+      u.update(:twofa_scheme => 'totp')
+    end
+
+    get '/users/current.json',
+        :headers => {'HTTP_ORIGIN' => 'https://evil.example'}.merge(credentials(user.login, 'my_password'))
+
+    assert_response :unauthorized
+    assert_nil response.headers['Access-Control-Allow-Origin']
+  end
+
+  # Creating a resource answers 201 with the new URL in Location, and a browser
+  # cannot read that header cross-origin unless it is named in
+  # Access-Control-Expose-Headers.
+  def test_expose_headers_should_let_a_browser_read_location_on_a_created_resource
+    Setting.rest_api_cors_origins = ALLOWED
+
+    post '/issues.json',
+         :params => {:issue => {:project_id => 1, :subject => 'CORS', :tracker_id => 1}},
+         :headers => {'HTTP_ORIGIN' => ALLOWED}.merge(credentials('jsmith'))
+
+    assert_response :created
+    assert response.headers['Location'].present?
+    assert_equal ALLOWED, response.headers['Access-Control-Allow-Origin']
+    assert_equal 'Location', response.headers['Access-Control-Expose-Headers']
+  end
+
+  def test_expose_headers_should_not_be_sent_to_a_disallowed_origin
+    Setting.rest_api_cors_origins = ALLOWED
+
+    get '/issues.json', :headers => {'HTTP_ORIGIN' => 'https://evil.example'}.merge(credentials('jsmith'))
+
+    assert_response :success
+    assert_nil response.headers['Access-Control-Expose-Headers']
+  end
+
+  # The filter is prepended, so it runs before user_setup calls
+  # Setting.check_cache. It therefore refreshes the settings cache itself --
+  # without that, a change made in another process (which is what the settings
+  # screen is, relative to this one) would only take effect on the request
+  # after next, and an origin that had just been removed would still be served
+  # once. update_all writes the row the way another process would: straight to
+  # the database, leaving this process's cache stale.
+  def test_a_settings_change_made_elsewhere_should_take_effect_on_the_very_next_request
+    Setting.rest_api_cors_origins = ''
+    assert_equal '', Setting.rest_api_cors_origins # warm the cache the way a served request would
+    Setting.where(:name => 'rest_api_cors_origins').update_all(:value => ALLOWED, :updated_on => 1.second.from_now)
+    assert_equal '', Setting.rest_api_cors_origins, 'the cache was not stale, so this test proves nothing'
+
+    get '/issues.json', :headers => {'HTTP_ORIGIN' => ALLOWED}.merge(credentials('jsmith'))
+
+    assert_response :success
+    assert_equal ALLOWED, response.headers['Access-Control-Allow-Origin']
   end
 
   private

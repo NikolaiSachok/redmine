@@ -209,11 +209,22 @@ default — allows nothing.
 How it works, and the four choices worth defending:
 
 - **A controller filter, not middleware.** `ApplicationController#set_cors_headers` runs inside the
-  request Redmine has already classified, so it can reuse `api_request?` and `Setting.rest_api_enabled?`
-  rather than re-deriving "is this an API call" from the path. It is placed immediately after
-  `user_setup` and *before* the access checks, so an allowed origin can read a 401 or 403 instead of
-  an opaque network error. The only exception is the preflight, which has no route to run a filter on:
-  `OPTIONS` on a `.json`/`.xml` path goes to a catch-all route and `CorsController`.
+  request Redmine has already classified, so it can reuse `Setting.rest_api_enabled?` and Redmine's own
+  notion of an API request rather than re-deriving "is this an API call" from the path. It is
+  *prepended*, so it runs before every other filter: a filter that renders halts the chain, and three
+  of the refusals a browser client most needs to read — a revoked OAuth token, HTTP Basic while 2FA is
+  active, and a password that must be changed — are rendered inside `user_setup` itself. Running after
+  `user_setup` would have missed exactly those. The cost of prepending is that `Setting.check_cache`
+  has not run yet, so the filter calls it itself; otherwise removing an origin would only take effect
+  on the request *after* next. The only exception to all this is the preflight, which has no route to
+  run a filter on: `OPTIONS` on a `.json`/`.xml` path goes to a catch-all route and `CorsController`.
+- **Scoped by the route, not by `?format=`.** Redmine's `api_request?` reads `params[:format]`, and a
+  caller can set that with a query parameter on *any* route — `/attachments/download/1?format=json`
+  answers with the raw file bytes. Using it here would have let the caller, rather than the route
+  table, decide which responses the policy covers. The filter therefore tests
+  `request.path_parameters[:format]`, which routing writes from the path extension and which no query
+  string can reach. `api_request?` itself is deliberately left alone: it is pre-existing behaviour
+  shared with the CSRF skip and the authentication path.
 - **Echoed, never wildcarded, and never with credentials.** `Access-Control-Allow-Credentials` is
   never sent, at all. That is what makes echoing the origin safe: a cross-origin caller cannot use the
   session cookie, so it must present an API key or a personal access token in a header — which is
@@ -225,7 +236,13 @@ How it works, and the four choices worth defending:
   `null` can never be allowed, even if an administrator types it in.
 - **`Vary: Origin` on every API response while the feature is on** — including responses to origins
   that are *not* allowed, and to requests with no `Origin` at all. Otherwise a shared cache could
-  store a headerless response and replay it to an allowed origin, or the reverse.
+  store a headerless response and replay it to an allowed origin, or the reverse. Note that a refused
+  origin does get `Vary: Origin`; what it never gets is any `Access-Control-*` header.
+- **`Access-Control-Expose-Headers: Location`.** Creating an issue or a project answers `201` with the
+  new URL in `Location` and nothing else, and a browser will not let a script read that header unless
+  it is named here. Without it the create flow — a large part of why a browser client wants the REST
+  API at all — is only half usable. The list is fixed, like the allowed methods and headers: nothing
+  is reflected from the request.
 
 The preflight answers identically for every path — `204`, empty body, same headers — so it cannot be
 used to enumerate which resources exist or which ones the caller could read. It asserts nothing about
@@ -247,6 +264,29 @@ authorisation; the real request that follows is authenticated exactly as before.
 - **Removing an origin is not instant** for a browser that has cached a preflight: `Access-Control-Max-Age`
   is 600 seconds. The actual request is re-checked every time, so a removed origin loses read access
   immediately; only the preflight is stale.
+- **Responses produced outside the controller carry no CORS headers at all** — a routing `404` for a
+  path that matches nothing, the `400` for a malformed JSON body, the `406` from `UnknownFormat`. They
+  are built by the exception app, which never runs a controller filter, so a browser client sees an
+  opaque network error rather than the status. This is the price of choosing a controller filter over
+  Rack middleware, taken knowingly: middleware would cover them but would have to re-derive "is this
+  an API request" from the raw path, duplicating routing. Nothing is leaked by it — a response with no
+  `Access-Control-Allow-Origin` is simply unreadable — but the diagnostics are worse.
+- **The preflight is an allowlist oracle.** `OPTIONS /anything.json` answers `204` for a configured
+  origin and `404` for any other, with no credential required, so anyone can test whether a domain is
+  on the list. This is inherent to CORS — the same signal leaks from the presence or absence of
+  `Access-Control-Allow-Origin` on a normal response — and it discloses nothing about resources, only
+  about the policy. Accepted rather than fixed. (Rate limiting, the usual mitigation, is explicitly out
+  of scope for this exercise.)
+- **A plugin cannot answer `OPTIONS` on a `.json` or `.xml` path.** The preflight catch-all is a glob,
+  and although it is now drawn *after* the plugin routes loop so that a plugin route defined there wins,
+  a plugin that draws its routes some other way, or any future route added below it in
+  `config/routes.rb`, would be shadowed for `OPTIONS`. `test/integration/routing/cors_test.rb` fails if
+  the glob stops being the last route drawn.
+- **A malformed origin is dropped silently.** `app.example.com` with no scheme, or a space-separated
+  rather than comma-separated list, parses to nothing: the setting is saved, the screen shows what was
+  typed, and the feature is inert. It fails closed, which is the right direction, but an administrator
+  gets no feedback that the value was rejected. Validating the field on save and reporting the rejected
+  entries is the fix and is not done here.
 
 ## Running and verifying
 
@@ -267,6 +307,7 @@ bin/rails test test/functional/my_controller_test.rb
 bin/rails test test/integration/routing/my_test.rb
 bin/rails test test/unit/lib/redmine/cors_test.rb
 bin/rails test test/integration/api_test/cors_test.rb
+bin/rails test test/integration/routing/cors_test.rb
 ```
 
 **CI status.** Redmine's own `Tests` workflow is green on this branch — all nine cells of its matrix
@@ -282,8 +323,9 @@ Full suite, run on this checkout:
 | Before any change (tag `6.1.2`) | 5479 | 24753 | 0 | 0 | 44 |
 | After the personal-access-token work | 5528 | 24901 | 0 | 0 | 44 |
 
-The CORS work landed after that measurement and adds 33 tests (10 in `test/unit/lib/redmine/cors_test.rb`,
-22 in `test/integration/api_test/cors_test.rb`, 1 in `test/functional/settings_controller_test.rb`).
+The CORS work landed after that measurement and adds 48 tests (12 in `test/unit/lib/redmine/cors_test.rb`,
+30 in `test/integration/api_test/cors_test.rb`, 5 in `test/integration/routing/cors_test.rb`, 1 in
+`test/functional/settings_controller_test.rb`).
 Those files, `test/integration/api_test/`, `test/integration/routing/`,
 `test/functional/my_controller_test.rb` and `test/functional/settings_controller_test.rb` were run and
 are green; the full-suite row is re-measured rather than extrapolated, so it is not restated here.
@@ -384,6 +426,7 @@ Unedited `curl` headers, with **Allowed origins** set to `https://app.example.co
 HTTP/1.1 200 OK
 vary: Origin
 access-control-allow-origin: https://app.example.com
+access-control-expose-headers: Location
 
 ### 2. hostile origin
 HTTP/1.1 200 OK
@@ -396,27 +439,58 @@ http://app.example.com                   -> 0
 https://app.example.com:8443             -> 0
 null                                     -> 0
 
-### 4. preflight, allowed
+### 4. create: 201 with a Location the browser is now allowed to read
+HTTP/1.1 201 Created
+vary: Origin
+access-control-allow-origin: https://app.example.com
+access-control-expose-headers: Location
+location: http://localhost:3001/issues/2
+
+### 5. a 403 rendered inside user_setup (this account must change its password)
+HTTP/1.1 403 Forbidden
+vary: Origin
+access-control-allow-origin: https://app.example.com
+access-control-expose-headers: Location
+
+### 6. preflight, allowed
 HTTP/1.1 204 No Content
 vary: Origin
 access-control-allow-origin: https://app.example.com
+access-control-expose-headers: Location
 access-control-allow-methods: GET, POST, PUT, PATCH, DELETE, OPTIONS
 access-control-allow-headers: Accept, Authorization, Content-Type, X-Redmine-API-Key, X-Redmine-Switch-User, X-Redmine-Nometa
 access-control-max-age: 600
 
-### 5. preflight, hostile
+### 7. preflight, hostile
 HTTP/1.1 404 Not Found
 vary: Origin
 
-### 6. HTML page, allowed origin
+### 8. HTML page, allowed origin
 HTTP/1.1 200 OK
 vary: Accept
+
+### 9. a file download opted into the policy with ?format=json -- the attack the
+###    red team found, re-run after the fix: the bytes come back, the headers do not
+HTTP/1.1 200 OK
+content-type: text/plain
+TOP-SECRET-ATTACHMENT-BODY
+
+### 10. the same trick on HTML routes -- count of access-control / vary: Origin headers
+/admin?format=json         -> 0
+/settings?format=json      -> 0
+/my/page?format=json       -> 0
 ```
 
 No `access-control-allow-credentials` appears anywhere above, by design. With the setting emptied
 again, the same requests return `HTTP/1.1 200 OK` with no `vary` and no CORS header at all, and the
 preflight returns `404` — which is what an `OPTIONS` request to Redmine did before this feature
 existed. A `*` typed into the setting behaves identically to an empty one.
+
+Cases 5, 9 and 10 are the ones the review gate produced. Case 5 used to answer `403` with no CORS
+header, because the filter ran after `user_setup` and `user_setup` renders that refusal itself; cases
+9 and 10 used to answer with `access-control-allow-origin` attached, because `?format=json` was enough
+to make Redmine call the request an API request. Both are re-runs of the exact commands from the
+attack ledger, against a server running the fixed code.
 
 ## Assumptions
 

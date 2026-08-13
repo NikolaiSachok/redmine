@@ -61,10 +61,19 @@ class ApplicationController < ActionController::Base
     end
   end
 
-  # set_cors_headers runs before the access checks on purpose: a browser has to
-  # be able to read a 401 or a 403 from an allowed origin, and a filter that
-  # halts the chain would otherwise skip the headers entirely.
-  before_action :session_expiration, :user_setup, :set_cors_headers, :check_if_login_required, :set_localization, :check_password_change, :check_twofa_activation
+  # set_cors_headers is prepended so that it runs before every other filter. A
+  # browser has to be able to read a 401 or a 403 from an allowed origin rather
+  # than an opaque network error, and a filter that renders halts the chain --
+  # so anything placed after user_setup misses the three refusals user_setup
+  # renders itself (a revoked OAuth token, HTTP Basic while 2FA is active, and
+  # an unchanged password), which are exactly the responses a browser client
+  # most needs to see.
+  #
+  # The trade is stated in set_cors_headers: Setting.check_cache runs in
+  # user_setup, so a prepended filter reads a settings cache one request stale
+  # unless it refreshes the cache itself, which it does.
+  prepend_before_action :set_cors_headers
+  before_action :session_expiration, :user_setup, :check_if_login_required, :set_localization, :check_password_change, :check_twofa_activation
   after_action :record_project_usage
 
   rescue_from ::Unauthorized, :with => :deny_access
@@ -739,11 +748,29 @@ class ApplicationController < ActionController::Base
   # Adds the CORS response headers when the request comes from an origin an
   # administrator has allowed.
   #
-  # Scoped to API requests. The HTML interface is same-origin by construction
-  # and relies on the session cookie, so making it cross-origin readable would
-  # widen the surface far beyond the REST API this setting is about.
+  # Scoped to requests the *route* resolved to an API representation, which is
+  # deliberately narrower than api_request?. api_request? reads params[:format],
+  # and that can be supplied as a query parameter on any route at all, so the
+  # caller rather than the route table would decide which responses the policy
+  # covers: GET /attachments/download/1?format=json answers with the raw file
+  # bytes and would carry the headers, and so would /admin?format=json and
+  # /my/page?format=json. request.path_parameters[:format] is written by
+  # routing from the path extension and cannot come from the query string.
+  # api_request? itself is left alone -- it is pre-existing behaviour shared
+  # with the CSRF skip and the authentication path.
+  #
+  # The HTML interface is same-origin by construction and relies on the session
+  # cookie, so making it cross-origin readable would widen the surface far
+  # beyond the REST API this setting is about.
   def set_cors_headers
-    return unless api_request?
+    return unless %w(xml json).include?(request.path_parameters[:format].to_s)
+
+    # This filter is prepended, so it runs before user_setup refreshes the
+    # settings cache. Refresh it here too, or removing an origin -- or turning
+    # the REST API off -- would only take effect on the request after next. The
+    # cost is one extra SELECT MAX(updated_on), on API requests only; making
+    # the off switch immediate is worth it.
+    Setting.check_cache
     return unless Redmine::Cors.enabled?
 
     # From here the response body and headers depend on the request's Origin,
@@ -762,6 +789,7 @@ class ApplicationController < ActionController::Base
     # sent with it: pairing credentials with an echoed origin is what turns a
     # CORS policy into a session hijack.
     response.headers['Access-Control-Allow-Origin'] = origin
+    response.headers['Access-Control-Expose-Headers'] = Redmine::Cors::EXPOSED_HEADERS
   end
 
   # Returns the API key present in the request

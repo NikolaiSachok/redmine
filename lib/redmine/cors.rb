@@ -46,6 +46,14 @@ module Redmine
     # so that removing an origin from the settings takes effect quickly.
     MAX_AGE = '600'
 
+    # Response headers a cross-origin caller may read on top of the CORS-safe
+    # list. Location is the one header Redmine's API sets that a client needs
+    # and cannot see by default: creating an issue or a project answers 201
+    # with it and nothing else, so without this the create flow is only half
+    # usable from a browser. Fixed, like the two lists above -- nothing is
+    # reflected from the request.
+    EXPOSED_HEADERS = 'Location'
+
     # An origin is a scheme, a host and an optional port, and nothing else
     # (RFC 6454 section 6.1). Anything that does not serialise that way -- a
     # path, a wildcard, the literal "null" -- is rejected here and can never
@@ -59,8 +67,24 @@ module Redmine
 
     # Returns the configured origins, normalised. Entries that are not valid
     # origins are dropped rather than being matched loosely.
+    #
+    # The result is memoised against the raw setting string, because enabled?
+    # and allows? both need it on every API request and splitting plus regex
+    # matching the list twice per request is pure waste. Keying the memo on the
+    # value it was derived from means there is nothing to invalidate: a changed
+    # setting -- whether from the settings screen, from Setting.check_cache
+    # picking up another process's write, or from a test -- produces a
+    # different key and is recomputed. Two threads racing here compute the same
+    # answer and assign the same kind of frozen pair, so the worst case is
+    # duplicated work.
     def self.allowed_origins
-      Setting.rest_api_cors_origins.to_s.split(',').filter_map {|value| normalize(value)}
+      raw = Setting.rest_api_cors_origins.to_s
+      cached = @allowed_origins
+      return cached.last if cached && cached.first == raw
+
+      origins = raw.split(',').filter_map {|value| normalize(value)}.freeze
+      @allowed_origins = [raw, origins].freeze
+      origins
     end
 
     # Returns true if the given Origin header value is allowed.

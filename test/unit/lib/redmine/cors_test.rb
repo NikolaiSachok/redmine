@@ -116,4 +116,26 @@ class Redmine::CorsTest < ActiveSupport::TestCase
     assert_not_includes Redmine::Cors::ALLOWED_METHODS, '*'
     assert_not_includes Redmine::Cors::ALLOWED_HEADERS, '*'
   end
+
+  # Nothing is reflected from the request, here either: a caller must not be
+  # able to have an arbitrary header name exposed to itself.
+  def test_exposed_headers_should_be_a_fixed_list_of_headers_redmine_sends
+    assert_equal ['Location'], Redmine::Cors::EXPOSED_HEADERS.split(',').map(&:strip)
+  end
+
+  # allowed_origins is memoised against the setting string it was parsed from,
+  # because enabled? and allows? both call it on every API request. The memo
+  # has to disappear the instant the setting changes, in either direction.
+  def test_allowed_origins_should_be_recomputed_when_the_setting_changes
+    with_settings :rest_api_cors_origins => 'https://a.example.com' do
+      assert_equal ['https://a.example.com'], Redmine::Cors.allowed_origins
+      assert_same Redmine::Cors.allowed_origins, Redmine::Cors.allowed_origins
+    end
+    with_settings :rest_api_cors_origins => 'https://b.example.com' do
+      assert_equal ['https://b.example.com'], Redmine::Cors.allowed_origins
+    end
+    with_settings :rest_api_cors_origins => '' do
+      assert_equal [], Redmine::Cors.allowed_origins
+    end
+  end
 end

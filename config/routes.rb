@@ -433,11 +433,6 @@ Rails.application.routes.draw do
   # Can be used by load balancers and uptime monitors to verify that the app is live.
   get "up" => "rails/health#show", :as => :rails_health_check
 
-  # CORS preflight. Nothing in Redmine answers OPTIONS, so this catch-all can
-  # only add behaviour, never shadow an existing route. It is constrained to
-  # the API formats so that OPTIONS on an HTML path still 404s as before.
-  match '*resource', :to => 'cors#preflight', :via => :options, :format => true, :constraints => {:format => /json|xml/}
-
   Redmine::Plugin.directory.glob("*/config/routes.rb").sort.each do |plugin_routes_path|
     instance_eval(plugin_routes_path.read, plugin_routes_path.to_s)
   rescue SyntaxError, StandardError => e
@@ -445,4 +440,14 @@ Rails.application.routes.draw do
     puts "An error occurred while loading the routes definition of #{plugin_name} plugin (#{plugin_routes_path}): #{e.message}."
     exit 1
   end
+
+  # CORS preflight. Nothing in Redmine answers OPTIONS, so this catch-all can
+  # only add behaviour, never shadow an existing route. It is constrained to
+  # the API formats so that OPTIONS on an HTML path still 404s as before.
+  #
+  # Drawn last, after the plugin routes, and that position is load-bearing: a
+  # glob route matches every path, so anything defined below it is unreachable
+  # for OPTIONS. A plugin that answers OPTIONS on a .json or .xml path must
+  # still win.
+  match '*resource', :to => 'cors#preflight', :via => :options, :format => true, :constraints => {:format => /json|xml/}
 end

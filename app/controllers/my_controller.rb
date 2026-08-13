@@ -157,7 +157,7 @@ class MyController < ApplicationController
   def new_personal_access_token
     @user = User.current
     @personal_access_token =
-      PersonalAccessToken.new(:expires_in_days => PersonalAccessToken::DEFAULT_LIFETIME_IN_DAYS)
+      PersonalAccessToken.new(:expires_in_days => PersonalAccessToken.default_lifetime_in_days)
   end
 
   def create_personal_access_token

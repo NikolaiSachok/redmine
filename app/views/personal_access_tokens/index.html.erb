@@ -1,0 +1,33 @@
+<%= title l(:label_personal_access_token_plural) %>
+
+<% if @tokens.any? %>
+<div class="autoscroll">
+<table class="list">
+  <thead>
+    <tr>
+      <th><%= l(:label_user) %></th>
+      <th><%= l(:field_name) %></th>
+      <th><%= l(:field_created_on) %></th>
+      <th><%= l(:field_expires_on) %></th>
+      <th><%= l(:field_last_used_on) %></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    <% @tokens.each do |token| %>
+    <tr id="personal-access-token-<%= token.id %>" class="<%= cycle('odd', 'even') %>">
+      <td class="user"><%= link_to_user token.user %></td>
+      <td class="name"><span><%= token.name %></span></td>
+      <td><%= format_time(token.created_at) %></td>
+      <td><%= token.expires_on ? format_date(token.expires_on) : l(:label_expiration_none) %></td>
+      <td><%= token.last_used_on ? format_time(token.last_used_on) : l(:label_personal_access_token_never_used) %></td>
+      <td class="buttons"><%= delete_link personal_access_token_path(token) %></td>
+    </tr>
+    <% end %>
+  </tbody>
+</table>
+</div>
+<span class="pagination"><%= pagination_links_full @token_pages, @token_count %></span>
+<% else %>
+<p class="nodata"><%= l(:label_no_data) %></p>
+<% end %>

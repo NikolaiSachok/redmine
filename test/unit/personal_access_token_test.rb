@@ -151,6 +151,53 @@ class PersonalAccessTokenTest < ActiveSupport::TestCase
     assert_not_nil token.reload.last_used_on
   end
 
+  def test_administrator_ceiling_should_require_an_expiry_within_it
+    with_settings :personal_access_token_max_lifetime_days => '60' do
+      assert PersonalAccessToken.expiry_required?
+      assert_equal [30, 60], PersonalAccessToken.offered_lifetimes_in_days
+
+      # no expiry is no longer allowed
+      never = PersonalAccessToken.new(:user => @user, :name => 'never', :expires_in_days => '')
+      assert !never.save
+      assert never.errors[:expires_on].present?
+
+      # nor is a lifetime beyond the ceiling, even from a crafted request
+      beyond = PersonalAccessToken.new(:user => @user, :name => 'beyond')
+      beyond.expires_on = User.current.today + 61
+      assert !beyond.save
+
+      assert PersonalAccessToken.new(:user => @user, :name => 'ok', :expires_in_days => '60').save
+    end
+  end
+
+  def test_administrator_ceiling_below_the_smallest_preset_should_still_offer_one
+    with_settings :personal_access_token_max_lifetime_days => '7' do
+      assert_equal [7], PersonalAccessToken.offered_lifetimes_in_days
+      assert_equal 7, PersonalAccessToken.default_lifetime_in_days
+    end
+  end
+
+  def test_no_ceiling_by_default
+    assert_nil PersonalAccessToken.max_lifetime_in_days
+    assert_not PersonalAccessToken.expiry_required?
+    assert_equal 30, PersonalAccessToken.default_lifetime_in_days
+  end
+
+  def test_destroy_expired_should_sweep_only_long_expired_tokens
+    kept_forever = PersonalAccessToken.create!(:user => @user, :name => 'no expiry')
+    recently_expired = PersonalAccessToken.create!(:user => @user, :name => 'recent')
+    recently_expired.update_column(:expires_on, Date.today - 1)
+    long_expired = PersonalAccessToken.create!(:user => @user, :name => 'old')
+    long_expired.update_column(:expires_on, Date.today - 400)
+
+    assert_difference 'PersonalAccessToken.count', -1 do
+      PersonalAccessToken.destroy_expired
+    end
+    assert PersonalAccessToken.exists?(kept_forever.id)
+    assert PersonalAccessToken.exists?(recently_expired.id), 'kept so the owner can see why it stopped working'
+    assert_not PersonalAccessToken.exists?(long_expired.id)
+  end
+
   def test_destroying_a_user_should_destroy_their_tokens
     token = PersonalAccessToken.create!(:user => @user, :name => 'CI')
     @user.destroy

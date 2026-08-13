@@ -13,14 +13,15 @@ It is a deliberately small slice of a large ticket, branched from tag `6.1.2`. R
 
 | | |
 |---|---|
-| **Done** | PAT model with hashed storage and per-token expiry; REST API authentication; My account management screen; unit, integration, functional and routing tests |
-| **Deferred** | Token scopes, audit logging, granular endpoint control, CORS, **admin lifetime policy and admin token overview**, expired-token cleanup, the 2FA posture, migration off the legacy API key — each an issue with reasoning |
+| **Done** | PAT model with hashed storage and per-token expiry; REST API authentication; My account management screen; **administration overview of every user's tokens**; **an administrator ceiling on token lifetime**; **cleanup of long-expired rows**; unit, integration, functional and routing tests |
+| **Deferred** | Token scopes, audit logging, granular endpoint control, CORS, the 2FA posture, migration off the legacy API key — each an issue with reasoning |
 | **Out of scope** | Rate limiting, excluded by the brief |
 | **Untouched** | The existing `api_key`, and `Token`, which it is built on |
 
-Deferred work is on the issue tracker rather than in this file's small print: issues #5–#10, #14 and
+Deferred work is on the issue tracker rather than in this file's small print: issues #5–#8, #10 and
 #15, labelled `deferred`. Two pre-existing weaknesses found while reading the code are recorded as #11
-and #12; they are not fixed here, because fixing them would widen a diff that should read as one slice.
+and #12; #11 is now fixed, because the red team showed this feature makes it reachable with a new
+credential, and #12 stays open because closing it fully belongs to the OAuth path, not to this slice.
 
 ## The problem, reproduced
 
@@ -129,17 +130,13 @@ Naming these is part of the deliverable, so none of them are buried:
   unset, so on a default installation the guard is a no-op and no password re-entry is required.
   The protection is real only where `sudo_mode: true` is configured; the tests pin it by enabling
   it explicitly. Found by the red team (`PAT-010`).
-- **The ticket asks for *mandatory* expiration; this implements a forced *choice*.** Pillar 1 of
-  #43881 says tokens must expire. Here the creation form makes you pick a lifetime — 30 days by
-  default — but "No expiration" is one of the options. The reason is that the credential being
-  replaced never expires, so forbidding permanent tokens outright would break the long-running
-  integrations that use the current API key, with no migration path offered in the same slice. Real
-  enforcement belongs with the administrator policy that can set a ceiling, deferred as issue #9.
-  This is a deliberate deviation from the ticket, not an oversight.
-- **No admin oversight.** An administrator cannot list or revoke another user's tokens, and cannot
-  enforce a maximum lifetime. That is the ticket's admin panel and policy work, deferred as issue #9.
-- **Expired and revoked rows are never swept.** `redmine:tokens:prune` covers the `tokens` table only,
-  so `personal_access_tokens` grows without bound. Issue #14.
+- **Expiry is mandatory only when an administrator says so.** Pillar 1 of #43881 says tokens must
+  expire. Out of the box the creation form makes you *choose* a lifetime — 30 days by default — with
+  "No expiration" available, because the credential being replaced never expires and forbidding
+  permanent tokens outright would break long-running integrations with no migration path offered in
+  the same slice. Setting **Maximum personal access token lifetime** (Administration → Settings →
+  API) turns it into a hard requirement: "No expiration" disappears, over-limit presets are dropped,
+  and the ceiling is enforced by a model validation so a crafted request cannot exceed it either.
 - **PATs inherit the existing API-key posture on 2FA and forced password change.** Neither blocks API
   key authentication in Redmine today, and PATs behave the same. Changing it is a product decision
   beyond this slice.
@@ -152,6 +149,20 @@ Naming these is part of the deliverable, so none of them are buried:
   the API-key sidebar block the new link sits beside — **is** verified, just not locally. The block's
   markup was left byte-for-byte untouched regardless, and a functional test now pins the same
   selectors as a runnable proxy.
+
+### Administration
+
+**Administration → Personal access tokens** lists every user's tokens — owner, name, created,
+expiry, last use — with per-row revoke behind `require_sudo_mode`, paginated like the other admin
+lists. It shows **no token value and no digest**: only digests are stored, so there is nothing there
+for an administrator to read even by accident, and the screen does not create a second place where a
+credential could leak.
+
+**Administration → Settings → API** carries the lifetime ceiling described above.
+
+Long-expired tokens are swept by `redmine:tokens:prune`, alongside the existing `Token` sweep. They
+are kept for 30 days *after* expiry on purpose, so a user who finds a token stopped working can still
+see why rather than finding it silently gone.
 
 ### What an adversarial pass changed
 

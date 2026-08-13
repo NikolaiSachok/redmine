@@ -37,6 +37,7 @@ namespace :redmine do
     desc 'Removes expired tokens.'
     task :prune => :environment do
       Token.destroy_expired
+      PersonalAccessToken.destroy_expired
     end
   end
 

@@ -101,6 +101,8 @@ Rails.application.routes.draw do
   get 'my/personal_access_tokens/new', :to => 'my#new_personal_access_token', :as => 'new_my_personal_access_token'
   post 'my/personal_access_tokens', :to => 'my#create_personal_access_token'
   delete 'my/personal_access_tokens/:id', :to => 'my#revoke_personal_access_token', :as => 'my_personal_access_token'
+
+  resources :personal_access_tokens, :only => [:index, :destroy]
   match 'my/password', :controller => 'my', :action => 'password', :via => [:get, :post]
   match 'my/add_block', :controller => 'my', :action => 'add_block', :via => :post
   match 'my/remove_block', :controller => 'my', :action => 'remove_block', :via => :post

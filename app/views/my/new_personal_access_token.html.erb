@@ -9,10 +9,12 @@
   <p><%= f.text_field :name, :size => 40, :required => true %></p>
   <p>
     <%= f.select :expires_in_days,
-                 PersonalAccessToken::LIFETIME_PRESETS_IN_DAYS.collect {|days| [l(:label_expiration_x_days, :count => days), days]} +
-                   [[l(:label_expiration_none), '']],
+                 PersonalAccessToken.offered_lifetimes_in_days.collect {|days| [l(:label_expiration_x_days, :count => days), days]} +
+                   (PersonalAccessToken.expiry_required? ? [] : [[l(:label_expiration_none), '']]),
                  :label => :field_expires_on %>
-    <em class="info"><%= l(:text_personal_access_token_no_expiration) %></em>
+    <em class="info">
+      <%= PersonalAccessToken.expiry_required? ? l(:text_personal_access_token_max_lifetime) : l(:text_personal_access_token_no_expiration) %>
+    </em>
   </p>
 </div>
 <p><%= submit_tag l(:button_create) %></p>

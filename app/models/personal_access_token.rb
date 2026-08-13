@@ -33,6 +33,10 @@ class PersonalAccessToken < ApplicationRecord
   LIFETIME_PRESETS_IN_DAYS = [30, 60, 90].freeze
   DEFAULT_LIFETIME_IN_DAYS = LIFETIME_PRESETS_IN_DAYS.first
 
+  # Tokens are kept for a while after they expire so their owner can still see
+  # why one stopped working, then swept by redmine:tokens:prune.
+  RETENTION_AFTER_EXPIRY_IN_DAYS = 30
+
   belongs_to :user
 
   validates :name, :presence => true, :length => {:maximum => 60}
@@ -41,6 +45,7 @@ class PersonalAccessToken < ApplicationRecord
 
   validate :expiry_must_not_be_in_the_past, :on => :create
   validate :lifetime_must_be_one_that_was_offered, :on => :create
+  validate :expiry_must_respect_the_administrator_ceiling, :on => :create
 
   before_validation :generate_token, :on => :create
 
@@ -53,6 +58,37 @@ class PersonalAccessToken < ApplicationRecord
   class << self
     def digest(value)
       Digest::SHA256.hexdigest(value.to_s)
+    end
+
+    # Administrator-set ceiling on token lifetime, in days, or nil when the
+    # installation does not set one.
+    def max_lifetime_in_days
+      days = Setting.personal_access_token_max_lifetime_days.to_i
+      days > 0 ? days : nil
+    end
+
+    # With a ceiling in place a token must expire, so "No expiration" is not
+    # offered and the presets above it are dropped.
+    def expiry_required?
+      max_lifetime_in_days.present?
+    end
+
+    def offered_lifetimes_in_days
+      max = max_lifetime_in_days
+      return LIFETIME_PRESETS_IN_DAYS.dup unless max
+
+      offered = LIFETIME_PRESETS_IN_DAYS.select {|days| days <= max}
+      offered.presence || [max]
+    end
+
+    def default_lifetime_in_days
+      offered_lifetimes_in_days.first
+    end
+
+    # Removes tokens that expired long enough ago to be of no further interest.
+    # Called by redmine:tokens:prune alongside Token.destroy_expired.
+    def destroy_expired(retention_days = RETENTION_AFTER_EXPIRY_IN_DAYS)
+      where(:expires_on => ...(Date.today - retention_days)).delete_all
     end
 
     # Returns the token for the given cleartext value, or nil
@@ -115,7 +151,20 @@ class PersonalAccessToken < ApplicationRecord
   # token that never expires without choosing "No expiration", and a
   # non-numeric one becomes 0 and expires the same day.
   def lifetime_must_be_one_that_was_offered
-    if @expires_in_days.present? && !LIFETIME_PRESETS_IN_DAYS.include?(@expires_in_days.to_i)
+    if @expires_in_days.present? && !self.class.offered_lifetimes_in_days.include?(@expires_in_days.to_i)
+      errors.add(:expires_on, :invalid)
+    end
+  end
+
+  # Enforced on the model rather than in the form, so a crafted request cannot
+  # outlive the policy either.
+  def expiry_must_respect_the_administrator_ceiling
+    max = self.class.max_lifetime_in_days
+    return if max.nil?
+
+    if expires_on.nil?
+      errors.add(:expires_on, :blank)
+    elsif expires_on > User.current.today + max
       errors.add(:expires_on, :invalid)
     end
   end

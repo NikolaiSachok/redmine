@@ -4,6 +4,11 @@
 <p><%= setting_check_box :rest_api_enabled %></p>
 
 <p><%= setting_check_box :jsonp_enabled %></p>
+
+<p>
+  <%= setting_text_field :personal_access_token_max_lifetime_days, :size => 6 %>
+  <em class="info"><%= l(:text_personal_access_token_max_lifetime) %></em>
+</p>
 </div>
 
 <%= submit_tag l(:button_save) %>

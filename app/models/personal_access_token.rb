@@ -31,16 +31,48 @@ class PersonalAccessToken < ApplicationRecord
   # array, because for a token those two mean opposite things -- nil is "not
   # restricted", an empty list is "allowed nothing".
   class PermissionsCoder
+    # The characters a permission name may contain for this coder to read back
+    # what it wrote. load is a scan for symbol names, so :viewIssues would be
+    # stored whole and read back as :view -- a scope meaning something other
+    # than what was validated, which is the worst failure shape available here.
+    # Core Redmine registers no such name and Role's coder has the same
+    # limitation; a plugin may. Rather than store a lie, such a name becomes
+    # UNREPRESENTABLE below and the whole scope is refused.
+    NAME = /[a-z0-9_]+/
+    ENTIRE_NAME = /\A#{NAME}\z/
+    SERIALIZED_NAME = /:(#{NAME})/
+
+    # Stands in for anything that is not a permission name this coder can carry
+    # unchanged. It is in no vocabulary, so the model's validation refuses any
+    # scope containing it, which is how a value the coder cannot represent
+    # becomes an invalid record rather than a quietly different scope.
+    UNREPRESENTABLE = :__unrepresentable__
+
     def self.load(str)
       return nil if str.nil?
 
-      str.to_s.scan(/:([a-z0-9_]+)/).flatten.map(&:to_sym)
+      str.to_s.scan(SERIALIZED_NAME).flatten.map(&:to_sym)
     end
 
+    # True when this coder can store the name and read the same one back.
+    def self.round_trips?(name)
+      ENTIRE_NAME.match?(name.to_s)
+    end
+
+    # Total on purpose. dump is not only called on the way to the column: Rails
+    # type-casts a serialized attribute by dumping and re-loading it, both when
+    # it is assigned and again when a failed save rolls back and the record
+    # state is snapshotted. Raising here would turn "this scope is invalid"
+    # into an exception from inside a callback, so nothing is refused at this
+    # layer -- what cannot be represented is marked, and the model refuses it.
+    #
+    # Blanks are dropped rather than marked: they are what the creation form's
+    # empty hidden field posts so that unticking every box submits something.
     def self.dump(value)
       return nil if value.nil?
 
-      YAML.dump(value.map(&:to_sym))
+      names = (value.is_a?(Array) ? value : [value]).reject {|name| name.to_s.empty?}
+      YAML.dump(names.map {|name| round_trips?(name) ? name.to_s.to_sym : UNREPRESENTABLE})
     end
   end
 
@@ -56,6 +88,14 @@ class PersonalAccessToken < ApplicationRecord
   SCOPE_PRESET_READ_ONLY = 'read_only'
   SCOPE_PRESET_CUSTOM = 'custom'
   SCOPE_PRESETS = [SCOPE_PRESET_FULL, SCOPE_PRESET_READ_ONLY, SCOPE_PRESET_CUSTOM].freeze
+
+  # What a create *request* means when it says nothing about scope. The form
+  # pre-selects this preset, and MyController applies it to a submission that
+  # omits the radio, so a hand-built post cannot arrive at the widest possible
+  # credential by saying less than the form does. Assigning nothing at all in
+  # code is still unrestricted -- that is what every token issued before scopes
+  # existed has -- but no request can reach that state.
+  DEFAULT_SCOPE_PRESET = SCOPE_PRESET_READ_ONLY
 
   # Redmine's :read flag on a permission means "still allowed while the project
   # is closed", which is not quite "does not write": closing and deleting a
@@ -91,6 +131,7 @@ class PersonalAccessToken < ApplicationRecord
   validate :expiry_must_not_be_in_the_past, :on => :create
   validate :lifetime_must_be_one_that_was_offered, :on => :create
   validate :expiry_must_respect_the_administrator_ceiling, :on => :create
+  validate :scope_preset_must_be_one_that_was_offered, :on => :create
   validate :permissions_must_be_a_known_non_empty_set
 
   before_validation :resolve_scope, :on => :create
@@ -241,18 +282,42 @@ class PersonalAccessToken < ApplicationRecord
   # that posted permissions[] after scope_preset=full would otherwise store the
   # picker's selection and ignore the preset.
   def resolve_scope
+    # A preset the form never offered names nothing, so it resolves nothing:
+    # scope_preset_must_be_one_that_was_offered refuses the record rather than
+    # letting an unrecognised value fall through and behave like "custom".
+    return unless @scope_preset.nil? || SCOPE_PRESETS.include?(@scope_preset)
+
     case @scope_preset
     when SCOPE_PRESET_FULL
       self.permissions = nil
     when SCOPE_PRESET_READ_ONLY
       self.permissions = self.class.read_only_permissions
     when SCOPE_PRESET_CUSTOM
-      # The picker's own selection is what gets stored, validated below. The
-      # blanks come from the empty hidden field the form posts so that
-      # unticking everything submits something.
-      self.permissions = Array(permissions).reject(&:blank?)
+      # The picker's own selection is what gets stored, validated below. A
+      # custom scope that names nothing has to become an empty list rather than
+      # stay nil: nil means unrestricted, so a submission with no box ticked
+      # and no hidden field would otherwise resolve to full access.
+      self.permissions = Array(permissions)
     end
-    self.permissions = permissions.map(&:to_sym) unless permissions.nil?
+    # With no preset at all, whatever was assigned to permissions is the scope,
+    # and nil there still means unrestricted -- which is what every token
+    # issued before scopes existed has. No request lands there: MyController
+    # supplies DEFAULT_SCOPE_PRESET when the form does not, so that case is the
+    # console and plugins only.
+    #
+    # Names posted as strings are already symbols by the time they can be read
+    # back: assigning a serialized attribute type-casts it through the coder.
+  end
+
+  # scope_preset is an input rather than a stored attribute, so a value that is
+  # not one of the three has no meaning: it names no preset and it is not the
+  # picker. Refusing it is what makes SCOPE_PRESETS the definition of what may
+  # be asked for, rather than a list documenting three of the infinitely many
+  # strings that would otherwise be treated as "custom".
+  def scope_preset_must_be_one_that_was_offered
+    if @scope_preset.present? && !SCOPE_PRESETS.include?(@scope_preset)
+      errors.add(:scope_preset, :inclusion)
+    end
   end
 
   # A scope narrows, so an unknown name in the list can never widen anything --
@@ -261,6 +326,13 @@ class PersonalAccessToken < ApplicationRecord
   # can reason about. An *empty* list is refused for a harder reason: Rails'
   # blank? treats it the same as no scope at all, and Role#allowed_permissions
   # reads a blank scope as unrestricted, so storing one would fail open.
+  #
+  # The coder normalises on assignment -- Rails type-casts a serialized
+  # attribute by dumping and re-loading it -- so what is checked here is always
+  # nil or a list of symbols, whatever shape the caller assigned. That is also
+  # what refuses a value the coder cannot carry, such as a mixed-case plugin
+  # permission name: it arrives here as PermissionsCoder::UNREPRESENTABLE,
+  # which is in no vocabulary.
   def permissions_must_be_a_known_non_empty_set
     return if permissions.nil?
 

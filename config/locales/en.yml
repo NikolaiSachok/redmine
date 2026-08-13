@@ -337,6 +337,7 @@ en:
   field_expires_on: Expires
   field_last_used_on: Last used
   field_permissions: Permissions
+  field_scope_preset: Scope
   field_passwd_changed_on: Password last changed
   field_language: Language
   field_effective_date: Due date
@@ -1046,7 +1047,9 @@ en:
   label_personal_access_token_scope_full: Full access
   label_personal_access_token_scope_read_only: Read-only
   label_personal_access_token_scope_custom: Custom
-  label_personal_access_token_scope_custom_count: "Custom (%{count} permissions)"
+  label_personal_access_token_scope_custom_count:
+    one: "Custom (1 permission)"
+    other: "Custom (%{count} permissions)"
   label_expiration_x_days: "%{count} days"
   label_expiration_none: No expiration
   label_profile: Profile

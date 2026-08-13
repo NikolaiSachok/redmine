@@ -163,7 +163,7 @@ class MyController < ApplicationController
     # a credential that can write should be asked for, not arrived at.
     @personal_access_token =
       PersonalAccessToken.new(:expires_in_days => PersonalAccessToken.default_lifetime_in_days,
-                              :scope_preset => PersonalAccessToken::SCOPE_PRESET_READ_ONLY)
+                              :scope_preset => PersonalAccessToken::DEFAULT_SCOPE_PRESET)
   end
 
   def create_personal_access_token
@@ -272,11 +272,20 @@ class MyController < ApplicationController
     false
   end
 
+  # The scope a create request gets when it does not choose one is the same
+  # scope the form pre-selects, and it is applied here rather than left to the
+  # model: assigning no permissions in code means unrestricted, because that is
+  # what every token issued before scopes existed has, but a *request* that
+  # says nothing must not be read as asking for the widest credential there is.
+  # The radio is always posted by the form, so this is reached only by a
+  # hand-built submission or a script.
   def personal_access_token_params
     if params[:personal_access_token].present?
-      params.require(:personal_access_token).permit(:name, :expires_in_days, :scope_preset, :permissions => [])
+      attrs = params.require(:personal_access_token).permit(:name, :expires_in_days, :scope_preset, :permissions => [])
+      attrs[:scope_preset] = PersonalAccessToken::DEFAULT_SCOPE_PRESET if attrs[:scope_preset].blank?
+      attrs
     else
-      {}
+      {:scope_preset => PersonalAccessToken::DEFAULT_SCOPE_PRESET}
     end
   end
 end

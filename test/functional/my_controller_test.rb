@@ -1058,6 +1058,63 @@ class MyControllerTest < Redmine::ControllerTest
     end
     assert_response :success
     assert_select '#errorExplanation'
+
+    # the same submission without even the form's empty hidden field: a custom
+    # scope naming nothing must be refused, not resolve to nil, which means
+    # unrestricted
+    assert_no_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => 'CI', :expires_in_days => '30',
+                                   :scope_preset => 'custom'}
+      }
+    end
+    assert_response :success
+    assert_select '#errorExplanation'
+  end
+
+  # A create request that says nothing about scope must not be read as asking
+  # for the widest credential there is. It gets what the form pre-selects, so a
+  # submission with the radio stripped behaves exactly like the untouched form.
+  def test_create_personal_access_token_without_a_preset_should_not_grant_full_access
+    assert_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => 'CI', :expires_in_days => '30'}
+      }
+    end
+    assert_response :success
+
+    token = PersonalAccessToken.order(:id => :desc).first
+    assert_not_nil token.permissions, 'a request that named no scope got full access'
+    assert_equal PersonalAccessToken.read_only_permissions.sort, token.permissions.sort
+  end
+
+  # The same, with a picker selection but no preset: the posted list must not
+  # become the scope by falling through the resolver's case.
+  def test_create_personal_access_token_without_a_preset_should_ignore_a_posted_permission_list
+    post :create_personal_access_token, :params => {
+      :personal_access_token => {:name => 'CI', :expires_in_days => '30',
+                                 :permissions => ['admin']}
+    }
+    assert_response :success
+
+    token = PersonalAccessToken.order(:id => :desc).first
+    assert_not_includes token.permissions, :admin
+    assert_equal PersonalAccessToken.read_only_permissions.sort, token.permissions.sort
+  end
+
+  # An unrecognised preset used to fall through the resolver's case and be
+  # treated as "custom", which made SCOPE_PRESETS decorative.
+  def test_create_personal_access_token_with_an_unknown_preset_should_redisplay_the_form
+    assert_no_difference 'PersonalAccessToken.count' do
+      post :create_personal_access_token, :params => {
+        :personal_access_token => {:name => 'CI', :expires_in_days => '30',
+                                   :scope_preset => 'bogus',
+                                   :permissions => ['admin']}
+      }
+    end
+    assert_response :success
+    assert_select '#errorExplanation'
+    assert_select 'pre#personal-access-token-value', 0
   end
 
   def test_personal_access_tokens_should_show_the_scope_of_each_token
@@ -1067,12 +1124,16 @@ class MyControllerTest < Redmine::ControllerTest
     PersonalAccessToken.create!(:user => User.find(2), :name => 'custom',
                                 :scope_preset => 'custom',
                                 :permissions => ['view_issues', 'edit_issues'])
+    PersonalAccessToken.create!(:user => User.find(2), :name => 'one permission',
+                                :scope_preset => 'custom',
+                                :permissions => ['add_issues'])
     get :personal_access_tokens
 
     assert_response :success
     assert_select 'table.list td.scope', :text => 'Full access'
     assert_select 'table.list td.scope', :text => 'Read-only'
     assert_select 'table.list td.scope', :text => 'Custom (2 permissions)'
+    assert_select 'table.list td.scope', :text => 'Custom (1 permission)'
   end
 
   def test_revoke_personal_access_token_of_another_user_should_respond_404

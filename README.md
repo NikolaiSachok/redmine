@@ -14,14 +14,14 @@ It is a deliberately small slice of a large ticket, branched from tag `6.1.2`. R
 | | |
 |---|---|
 | **Done** | PAT model with hashed storage and per-token expiry; REST API authentication; My account management screen; **administration overview of every user's tokens**; **an administrator ceiling on token lifetime**; **cleanup of long-expired rows**; unit, integration, functional and routing tests |
-| **Also done** | **Token scopes** (pillar #2) — a read-only preset, a full-access preset and a permission picker, enforced through the mechanism Redmine already uses for OAuth2 scopes; **CORS for the REST API** (pillar #6) — an administrator allowlist of origins, off by default |
-| **Deferred** | Audit logging, granular endpoint control, the 2FA posture, migration off the legacy API key — each an issue with reasoning |
+| **Also done** | **Permission scopes for tokens** — one of pillar #2's four bullets: a read-only preset, a full-access preset and a permission picker, enforced through the mechanism Redmine already uses for OAuth2 scopes; **CORS for the REST API** (pillar #6) — an administrator allowlist of origins, off by default |
+| **Deferred** | The rest of pillar #2 — per-tracker scoping, per-project scoping and an administrator-defined scope vocabulary; audit logging, granular endpoint control, the 2FA posture, migration off the legacy API key — each an issue with reasoning |
 | **Out of scope** | Rate limiting, excluded by the brief |
 | **Untouched** | The existing `api_key`, and `Token`, which it is built on |
 
-Deferred work is on the issue tracker rather than in this file's small print: issues #6, #7, #10
-and #15, labelled `deferred`. Issues #5 (scopes) and #8 (CORS) started there and were implemented
-after the core was solid; each has its own section below. Two pre-existing weaknesses found while reading the code are recorded as #11
+Deferred work is on the issue tracker rather than in this file's small print: issues #6, #7, #10,
+#15, #17, #18 and #19, labelled `deferred`. CORS (#8) started there and was implemented
+after the core was solid; it and the scopes work each have their own section below. Two pre-existing weaknesses found while reading the code are recorded as #11
 and #12; #11 is now fixed, because the red team showed this feature makes it reachable with a new
 credential, and #12 stays open because closing it fully belongs to the OAuth path, not to this slice.
 
@@ -203,9 +203,13 @@ legacy key keeps all three transports; nothing existing was taken away.
 
 ## Token scopes (issue #5, ticket pillar #2)
 
-The ticket asks for tokens "restricted to a subset of the user's permissions, e.g. read-only", and
-says to reuse the OAuth2 scope mechanism. That is what this does, rather than inventing a second
-authorisation system beside the one already in the tree.
+**Pillar #2 of the ticket has four bullets, and one of them is built here.** It asks for tokens
+"restricted to a subset of the user's permissions, e.g. read-only" — which is what this does, reusing
+the OAuth2 scope mechanism the ticket names rather than inventing a second authorisation system
+beside the one already in the tree. It also asks for scoping by **specific trackers**, for limiting a
+token to **specific projects**, and for **administrators defining which scopes are available
+globally**. None of those three is implemented; each is an open issue with the reasoning, and they
+are listed again under the limits below.
 
 **The creation form offers three things.** *Read-only* (the default), *Full access*, and *Custom*
 with a permission picker grouped by project module, the same grouping the roles screen uses. What is
@@ -219,7 +223,8 @@ permission list onto the `User` object for that request only — never persisted
 `oauth_scope` — and `User#allowed_to?` hands it to `role.allowed_to?(action, scope)`, where
 `Role#allowed_permissions` intersects it with what the role actually grants. `User#admin?` consults
 it too, the way it already did for OAuth: without `:admin` in the scope, an administrator's token is
-not an administrator's. There are four enforcement points in the codebase and this uses all four.
+not an administrator's. Those are the three places a scope is consulted: `User#admin?` and the two
+`role.allowed_to?(action, scope)` call sites in `User#allowed_to?`.
 
 The choices worth defending:
 
@@ -231,6 +236,13 @@ The choices worth defending:
 - **Intersection, never union.** A scope cannot grant. The check runs against the owner's roles at
   request time, so a token naming `:delete_issues` for an owner whose role lost that permission
   yesterday gets nothing. Proved with a test that removes the permission from the role and then asks.
+- **A create request that names no scope gets the form's default, not full access.** The radio is
+  always posted by the form, so this only happens to a hand-built submission — which is exactly the
+  case that must not be read as asking for the widest credential there is. `MyController` fills in
+  `PersonalAccessToken::DEFAULT_SCOPE_PRESET`, so stripping the radio out of the form produces the
+  same token the untouched form would. Assigning nothing at all *in code* is still unrestricted,
+  because that is what every token issued before scopes existed has, but no request can reach that
+  state. A preset that is not one of the three is refused rather than treated as "custom".
 - **`NULL` is unrestricted, `[]` is nothing.** These are opposite meanings and Rails' `blank?`
   collapses them: `Role#allowed_permissions` reads a blank scope as unrestricted, so an empty list
   would **fail open**. It is refused by a model validation, and refused again in `User#allowed_to?`
@@ -278,8 +290,23 @@ The choices worth defending:
 - **Reference data is readable by any API credential.** `require_admin_or_api_request` returns true
   for every API request, so `/trackers.json`, `/issue_statuses.json`, `/roles.json` and the
   enumerations answer a read-only token. That predates this branch and is unchanged by it.
-- **Scopes reach the API only.** Tokens authenticate `.json`/`.xml` requests, so there is no HTML or
-  Atom path for a scope to leak through.
+- **Tokens authenticate HTML too, and the scope goes with them.** An earlier draft of this file said
+  scopes reach the API only, because a token authenticates only an `api_request?`. That was wrong,
+  and worth correcting rather than quietly deleting: `find_current_user` gates the token on
+  `accept_api_auth?`, which has no format check at all, so `GET /my/account` as **HTML** with a token
+  answers `200` where anonymous is redirected to the sign-in page. No credential is disclosed through
+  that path — the API key is hidden from token-authenticated requests wherever it is rendered — and
+  the scope narrows there at the same enforcement points, which is now pinned by
+  `test_scope_006_an_html_action_that_accepts_api_auth_is_still_narrowed` rather than assumed. Atom
+  is a separate path (`accept_atom_auth`) and tokens do not authenticate it.
+- **Three quarters of ticket pillar #2 is not built.** The ticket asks for four things and this
+  implements one of them. Scoping a token to **specific trackers** is issue #17; limiting a token to
+  **specific projects** is #18; letting **administrators define which scopes are available globally**
+  is #19. The first two are a different shape of restriction from a permission list — they narrow
+  *which records* rather than *which verbs*, so they belong at `Project.allowed_to_condition` and in
+  the query scopes, which is where this design is deliberately porous (the first limit above). The
+  third is an administration screen over a vocabulary that is currently `Redmine::AccessControl`'s
+  whole permission list. Each is an open, labelled issue rather than a sentence here.
 - **The legacy `api_key` is unscoped and unchanged**, on all three of its transports.
 
 ## Cross-origin resource sharing (issue #8, ticket pillar #6)

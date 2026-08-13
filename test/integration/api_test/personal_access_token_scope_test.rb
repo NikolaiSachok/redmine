@@ -276,4 +276,93 @@ class Redmine::ApiTest::PersonalAccessTokenScopeTest < Redmine::ApiTest::Base
     get '/projects/1.json', :headers => headers_for(token)
     assert_response :forbidden
   end
+
+  # ATTACKS.md SCOPE-008b, the red team's variation on SCOPE-008. An empty
+  # scope cannot be created -- the validation refuses it -- so the only way to
+  # reach the *second* guard, the one in User#allowed_to?, is to plant an empty
+  # list in the row directly. attr_readonly refuses update_column, so this uses
+  # update_all, which is the same door raw SQL would come through.
+  #
+  # It matters because Role#allowed_permissions reads a blank scope as
+  # unrestricted: without the guard this is not a 403, it is full access.
+  def test_scope_008b_an_empty_stored_scope_fails_closed_in_allowed_to
+    token = read_only_token
+    PersonalAccessToken.where(:id => token.id).update_all(:permissions => [])
+    assert_equal [], token.reload.permissions
+
+    user = PersonalAccessToken.authenticate(token.value)
+    assert_equal [], user.personal_access_token_scope
+    assert_not user.allowed_to?(:view_issues, Project.find(1))
+    assert_not user.allowed_to?(:edit_issues, Project.find(1))
+
+    get '/issues/1.json', :headers => headers_for(token)
+    assert_response :forbidden
+
+    assert_no_difference 'Issue.count' do
+      post '/issues.json',
+           :params => {:issue => {:project_id => 1, :subject => 'from an empty scope'}},
+           :headers => headers_for(token)
+      assert_response :forbidden
+    end
+  end
+
+  # ATTACKS.md SCOPE-015, chained from CORS-010. api_request? reads
+  # params[:format], which can be supplied as a query parameter on a route with
+  # no extension, so ?format=json is a second door into the API. The scope has
+  # to be enforced there identically -- a door that authenticates a token
+  # without narrowing it is the whole feature bypassed.
+  def test_scope_015_the_format_query_param_enforces_scope
+    writer = PersonalAccessToken.create!(
+      :user => @user, :name => 'writer',
+      :scope_preset => PersonalAccessToken::SCOPE_PRESET_CUSTOM,
+      :permissions => [:add_issues]
+    )
+
+    # the owner may read issues; the scope is what refuses it
+    assert User.find(2).allowed_to?(:view_issues, Project.find(1))
+    get '/issues?format=json', :headers => headers_for(writer)
+    assert_response :forbidden
+
+    get '/issues?format=json', :headers => headers_for(read_only_token)
+    assert_response :ok
+    assert ActiveSupport::JSON.decode(response.body)['issues'].any?
+  end
+
+  # ATTACKS.md SCOPE-006, whose seed disposition was wrong. It was recorded as
+  # "not applicable by construction -- a token authenticates only when
+  # api_request? is true". It does not: find_current_user gates the token on
+  # accept_api_auth?, which has no format check at all, so an HTML request to
+  # any action declaring accept_api_auth authenticates by token. No key
+  # disclosure was found through that path, but the claim was false, so the
+  # behaviour is pinned here instead of assumed away.
+  def test_scope_006_an_html_action_that_accepts_api_auth_is_still_narrowed
+    reader = read_only_token
+
+    # the HTML path really does need a credential
+    get '/my/account'
+    assert_response :redirect
+
+    # ...and a token supplies one, HTML or not
+    get '/my/account', :headers => headers_for(reader)
+    assert_response :ok
+
+    # what that page does *not* do is hand over the permanent credential: the
+    # key lives behind my/api_key, which does not declare accept_api_auth, so
+    # the token does not authenticate it at all
+    assert_select 'pre', :text => /\A[0-9a-f]{40}\z/, :count => 0
+    get '/my/api_key', :headers => headers_for(reader)
+    assert_response :redirect
+
+    # so the scope has to narrow there too, at the same enforcement point
+    writer = PersonalAccessToken.create!(
+      :user => @user, :name => 'writer',
+      :scope_preset => PersonalAccessToken::SCOPE_PRESET_CUSTOM,
+      :permissions => [:add_issues]
+    )
+    get '/issues/1', :headers => headers_for(writer)
+    assert_response :forbidden
+
+    get '/issues/1', :headers => headers_for(reader)
+    assert_response :ok
+  end
 end

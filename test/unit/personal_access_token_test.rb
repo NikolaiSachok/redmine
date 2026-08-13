@@ -282,6 +282,81 @@ class PersonalAccessTokenTest < ActiveSupport::TestCase
     assert token.errors[:permissions].present?
   end
 
+  # Strong parameters drop a scalar, so a value of the wrong shape can only
+  # come from code -- but it used to raise NoMethodError out of a callback,
+  # which made the model unusable to anything but the form. A single name is
+  # read as a one-name scope; nothing else resolves to a scope at all, and each
+  # of these is refused by a validation rather than by an exception.
+  def test_a_permissions_value_that_is_not_a_list_of_names_should_be_invalid
+    [
+      [nil],
+      [['view_issues']],
+      {:view_issues => true},
+      1
+    ].each do |value|
+      token = PersonalAccessToken.new(:user => @user, :name => "t#{value.hash}",
+                                      :permissions => value)
+      assert_not token.save, "expected #{value.inspect} to be refused"
+      assert token.errors[:permissions].present?, "expected an error on permissions for #{value.inspect}"
+    end
+  end
+
+  # The coder is necessarily total: Rails type-casts a serialized attribute by
+  # dumping and re-loading it, on assignment and again when a failed save rolls
+  # back, so it cannot refuse a value. A bare name is therefore normalised to
+  # the one-name list it obviously means, rather than refused by a coder that
+  # would have to raise to do it.
+  def test_a_single_permission_name_should_be_read_as_a_one_name_scope
+    token = PersonalAccessToken.create!(:user => @user, :name => 'CI',
+                                        :permissions => 'view_issues')
+    assert_equal [:view_issues], token.reload.permissions
+  end
+
+  # The coder reads the column back by scanning for symbol names, so a name
+  # with a capital in it would be stored as :viewIssues and read back as
+  # :view -- a scope that means something other than what was validated. Core
+  # Redmine registers no such name; a plugin can. Refused rather than mangled.
+  def test_a_permission_name_the_coder_cannot_round_trip_should_be_refused
+    # what a naive dump would have stored, read back as a *different*
+    # permission: the scan stops at the capital
+    assert_equal [:view], PersonalAccessToken::PermissionsCoder.load(YAML.dump([:viewIssues]))
+    # what this coder stores instead: a name that is in no vocabulary
+    assert_equal [PersonalAccessToken::PermissionsCoder::UNREPRESENTABLE],
+                 PersonalAccessToken::PermissionsCoder.load(
+                   PersonalAccessToken::PermissionsCoder.dump([:viewIssues])
+                 )
+
+    # a plugin registering a name core Redmine would never use
+    with_a_plugin_permission =
+      Redmine::AccessControl.permissions + [Redmine::AccessControl::Permission.new(:viewIssues, {}, {})]
+    Redmine::AccessControl.stubs(:permissions).returns(with_a_plugin_permission)
+    assert_includes PersonalAccessToken.scope_vocabulary, :viewIssues
+
+    token = PersonalAccessToken.new(:user => @user, :name => 'CI',
+                                    :scope_preset => 'custom',
+                                    :permissions => ['viewIssues'])
+    assert_not token.save
+    assert token.errors[:permissions].present?
+  end
+
+  # An unrecognised preset used to fall through the resolver's case and behave
+  # like "custom", which left SCOPE_PRESETS documenting three of the infinitely
+  # many strings that were accepted.
+  def test_an_unknown_scope_preset_should_be_refused
+    token = PersonalAccessToken.new(:user => @user, :name => 'CI',
+                                    :scope_preset => 'bogus',
+                                    :permissions => ['admin'])
+    assert_not token.save
+    assert token.errors[:scope_preset].present?
+
+    PersonalAccessToken::SCOPE_PRESETS.each do |preset|
+      assert PersonalAccessToken.new(:user => @user, :name => "ok #{preset}",
+                                     :scope_preset => preset,
+                                     :permissions => ['view_issues']).save,
+             "expected #{preset} to be accepted"
+    end
+  end
+
   def test_admin_should_be_part_of_the_scope_vocabulary
     assert_includes PersonalAccessToken.scope_vocabulary, :admin
     assert PersonalAccessToken.new(:user => @user, :name => 'CI',
@@ -323,6 +398,14 @@ class PersonalAccessTokenTest < ActiveSupport::TestCase
                                         :scope_preset => 'read_only')
     token.permissions = [:admin]
     token.save!
+    assert_equal PersonalAccessToken.read_only_permissions.sort, token.reload.permissions.sort
+
+    # attr_readonly turned out to be stronger than "the write is dropped":
+    # update_column raises in Rails 7.2, so the only way past it is raw SQL,
+    # and no request path issues any.
+    assert_raises(ActiveRecord::ActiveRecordError) do
+      token.update_column(:permissions, [:admin])
+    end
     assert_equal PersonalAccessToken.read_only_permissions.sort, token.reload.permissions.sort
   end
 

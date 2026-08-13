@@ -329,4 +329,56 @@ class ApiAuditEventsControllerTest < Redmine::ControllerTest
     assert_response :success
     assert_equal 1, ApiAuditEvent.count
   end
+
+  # UI-004. Saving a query worked and re-running it by URL worked; nothing in
+  # the product linked to it, so the only way back was a hand-built query_id.
+  # Asserted on the rendered sidebar rather than on the query being saved,
+  # because "the row exists" was already true while the defect was present.
+  def test_ui_004_a_saved_query_should_be_linked_from_the_sidebar
+    query = ApiAuditQuery.create!(:name => 'Refused calls', :user_id => 1, :visibility => Query::VISIBILITY_PRIVATE)
+
+    get :index
+
+    assert_response :success
+    assert_select '#sidebar a[href=?]', "/api_audit_events?query_id=#{query.id}", :text => 'Refused calls'
+  end
+
+  # The other half of UI-004: the sidebar must not become a disclosure channel.
+  # ApiAuditQuery.visible is admin-only in both directions, and this pins that
+  # the view honours it rather than listing every saved query it can load.
+  def test_ui_004_the_sidebar_should_not_leak_another_users_saved_query
+    ApiAuditQuery.create!(:name => 'Admin only', :user_id => 1, :visibility => Query::VISIBILITY_PRIVATE)
+    @request.session[:user_id] = 2
+
+    get :index
+
+    assert_response :forbidden
+    assert_select 'a', {:text => 'Admin only', :count => 0}
+  end
+
+  # UI-007. The heading already showed the query name; the browser title did not.
+  def test_ui_007_the_page_title_should_name_the_loaded_query
+    query = ApiAuditQuery.create!(:name => 'Refused calls', :user_id => 1, :visibility => Query::VISIBILITY_PRIVATE)
+
+    get :index, :params => {:query_id => query.id}
+
+    assert_response :success
+    assert_select 'head title', :text => /Refused calls/
+  end
+
+  # The token column is in the *default* set, not merely available. The
+  # regression this pins is specific: every existing test that asserts on the
+  # token column passes it explicitly with :c, so all of them stayed green while
+  # the default screen could not answer "which token".
+  def test_the_default_columns_should_name_the_token
+    token = PersonalAccessToken.create!(:user => User.find(2), :name => 'CI')
+    generate_event(:credential_type => ApiAuditEvent::CREDENTIAL_PERSONAL_ACCESS_TOKEN,
+                   :personal_access_token_id => token.id)
+
+    get :index
+
+    assert_response :success
+    assert_includes ApiAuditQuery.new.default_columns_names, :personal_access_token
+    assert_select 'table.list td.personal_access_token', :text => 'CI'
+  end
 end

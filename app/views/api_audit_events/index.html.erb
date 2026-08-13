@@ -38,4 +38,8 @@
   </div>
 <% end %>
 
-<% html_title(l(:label_api_audit_event_plural)) -%>
+<% content_for :sidebar do %>
+  <%= render_sidebar_queries(ApiAuditQuery, nil) %>
+<% end %>
+
+<% html_title(@query.new_record? ? l(:label_api_audit_event_plural) : @query.name) -%>

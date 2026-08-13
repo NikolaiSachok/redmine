@@ -107,8 +107,13 @@ class ApiAuditQuery < Query
     %w(GET POST PUT PATCH DELETE HEAD OPTIONS).map {|method| [method, method]}
   end
 
+  # The token is in the default set, not merely available. credential_type says
+  # only *that* a token was used; "which one" is the first question an
+  # administrator asks, and a default view that cannot answer it fails the
+  # purpose of auditing credential usage. base_scope already preloads the
+  # association, so the cost was being paid for a column nobody was shown.
   def default_columns_names
-    @default_columns_names ||= [:created_on, :login, :impersonator_login, :credential_type, :http_method, :endpoint, :status, :ip]
+    @default_columns_names ||= [:created_on, :login, :impersonator_login, :credential_type, :personal_access_token, :http_method, :endpoint, :status, :ip]
   end
 
   def default_sort_criteria
